@@ -94,3 +94,15 @@ export const unpinMessage = async (chatId, messageId) => {
   const { data } = await httpClient.delete(`/api/chats/${chatId}/pins/${messageId}`);
   return data;
 };
+
+export const updateModeration = async (chatId, payload) => {
+  const { data } = await httpClient.patch(`/api/chats/${chatId}/moderation`, payload);
+  return data;
+};
+
+export const getAudit = async (chatId, limit = 50) => {
+  const { data } = await httpClient.get(`/api/chats/${chatId}/audit`, {
+    params: { limit },
+  });
+  return data;
+};

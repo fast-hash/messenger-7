@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Chat = require('../models/Chat');
 const User = require('../models/User');
 const Message = require('../models/Message');
+const auditService = require('./auditService');
 const { Types } = mongoose;
 
 const toObjectId = (value) => {
@@ -117,6 +118,8 @@ const toChatDto = (chatDoc, currentUserId) => {
     pinnedMessageIds: (chatDoc.pinnedMessageIds || []).map((id) =>
       id._id ? id._id.toString() : id.toString()
     ),
+    muteUntil: chatDoc.muteUntil,
+    rateLimitPerMinute: chatDoc.rateLimitPerMinute ?? null,
   };
 };
 
@@ -643,6 +646,14 @@ const pinMessage = async ({ chatId, userId, messageId }) => {
   if (!existing.includes(messageId.toString())) {
     chat.pinnedMessageIds.push(messageId);
     await chat.save();
+    if (chat.type === 'group') {
+      await auditService.logEvent({
+        chatId,
+        actorId: userId,
+        type: 'PIN_ADDED',
+        meta: { messageId: messageId.toString() },
+      });
+    }
   }
 
   return { pinnedMessageIds: (chat.pinnedMessageIds || []).map((id) => id.toString()) };
@@ -662,6 +673,15 @@ const unpinMessage = async ({ chatId, userId, messageId }) => {
   );
   await chat.save();
 
+  if (chat.type === 'group') {
+    await auditService.logEvent({
+      chatId,
+      actorId: userId,
+      type: 'PIN_REMOVED',
+      meta: { messageId: messageId.toString() },
+    });
+  }
+
   return { pinnedMessageIds: (chat.pinnedMessageIds || []).map((id) => id.toString()) };
 };
 
@@ -675,6 +695,74 @@ const listPins = async ({ chatId, userId }) => {
 
   ensureChatParticipant(chat, userId);
   return { pinnedMessageIds: (chat.pinnedMessageIds || []).map((id) => id.toString()) };
+};
+
+const updateModeration = async ({ chatId, actorId, actorRole, muteUntil, rateLimitPerMinute }) => {
+  const chat = await Chat.findById(chatId);
+  if (!chat) {
+    const error = new Error('Чат не найден');
+    error.status = 404;
+    throw error;
+  }
+
+  if (chat.type !== 'group') {
+    const error = new Error('Модерация доступна только для групповых чатов');
+    error.status = 400;
+    throw error;
+  }
+
+  const isGroupAdmin =
+    (chat.admins || []).some((id) => id.toString() === actorId.toString()) ||
+    (chat.createdBy && chat.createdBy.toString() === actorId.toString());
+
+  const isGlobalAdmin = actorRole === 'admin';
+
+  if (!isGroupAdmin && !isGlobalAdmin) {
+    const error = new Error('Недостаточно прав для управления модерацией чата');
+    error.status = 403;
+    throw error;
+  }
+
+  const prevMute = chat.muteUntil;
+  const prevRate = chat.rateLimitPerMinute;
+
+  if (muteUntil !== undefined) {
+    chat.muteUntil = muteUntil ? new Date(muteUntil) : null;
+  }
+
+  if (rateLimitPerMinute !== undefined) {
+    chat.rateLimitPerMinute = Number.isFinite(rateLimitPerMinute)
+      ? rateLimitPerMinute
+      : rateLimitPerMinute === 0 || rateLimitPerMinute === null
+      ? null
+      : chat.rateLimitPerMinute ?? null;
+  }
+
+  await chat.save();
+
+  if (muteUntil !== undefined && (prevMute || chat.muteUntil)) {
+    await auditService.logEvent({
+      chatId,
+      actorId,
+      type: chat.muteUntil ? 'MUTE_SET' : 'MUTE_CLEARED',
+      meta: { muteUntil: chat.muteUntil },
+    });
+  }
+
+  if (rateLimitPerMinute !== undefined && (prevRate || chat.rateLimitPerMinute)) {
+    await auditService.logEvent({
+      chatId,
+      actorId,
+      type: chat.rateLimitPerMinute ? 'RATE_LIMIT_SET' : 'RATE_LIMIT_CLEARED',
+      meta: { rateLimitPerMinute: chat.rateLimitPerMinute ?? null },
+    });
+  }
+
+  return {
+    chatId: chat._id.toString(),
+    muteUntil: chat.muteUntil,
+    rateLimitPerMinute: chat.rateLimitPerMinute ?? null,
+  };
 };
 
 module.exports = {
@@ -697,4 +785,5 @@ module.exports = {
   pinMessage,
   unpinMessage,
   listPins,
+  updateModeration,
 };

@@ -13,6 +13,8 @@ const mapChat = (chat, currentUserId) => {
     removedParticipants: chat.removedParticipants || [],
     blocks: chat.blocks || [],
     pinnedMessageIds: chat.pinnedMessageIds || [],
+    muteUntil: chat.muteUntil || null,
+    rateLimitPerMinute: chat.rateLimitPerMinute ?? null,
   };
 
   if (chat.type === 'group') {
@@ -41,6 +43,7 @@ export const useChatStore = create((set, get) => ({
   dndEnabled: false,
   dndUntil: null,
   pinnedByChat: {},
+  auditLogs: {},
   setDndStatus(dndEnabled, dndUntil) {
     set({ dndEnabled: !!dndEnabled, dndUntil: dndUntil || null });
   },
@@ -135,6 +138,14 @@ export const useChatStore = create((set, get) => ({
       get().setMessageReactions(chatId, messageId, reactions);
     });
 
+    socket.on('message:deleted', ({ chatId, messageId, deletedForAll, deletedAt, deletedBy }) => {
+      get().setMessageDeleted(chatId, { messageId, deletedForAll, deletedAt, deletedBy });
+    });
+
+    socket.on('chat:moderationUpdated', ({ chatId, muteUntil, rateLimitPerMinute }) => {
+      get().setChatModeration(chatId, { muteUntil, rateLimitPerMinute });
+    });
+
     set({ socket });
   },
   setSocket(socket) {
@@ -153,6 +164,7 @@ export const useChatStore = create((set, get) => ({
       typing: {},
       socket: null,
       pinnedByChat: {},
+      auditLogs: {},
     });
   },
   async loadChats(currentUserId) {
@@ -220,13 +232,55 @@ export const useChatStore = create((set, get) => ({
     const { reactions } = await messagesApi.toggleReaction(messageId, emoji);
     get().setMessageReactions(chatId, messageId, reactions);
   },
-  async sendMessage(chatId, text) {
+  async updateModeration(chatId, payload) {
+    const moderation = await chatApi.updateModeration(chatId, payload);
+    get().setChatModeration(chatId, moderation);
+    return moderation;
+  },
+  async loadAudit(chatId, limit = 50) {
+    const { events } = await chatApi.getAudit(chatId, limit);
+    set((state) => ({
+      auditLogs: {
+        ...state.auditLogs,
+        [chatId]: events,
+      },
+    }));
+    return events;
+  },
+  async deleteMessageForMe(chatId, messageId) {
+    await messagesApi.deleteForMe(messageId);
+    set((state) => {
+      const chatMessages = state.messages[chatId] || [];
+      return {
+        messages: {
+          ...state.messages,
+          [chatId]: chatMessages.filter((msg) => (msg.id || msg._id || msg.messageId) !== messageId),
+        },
+      };
+    });
+  },
+  async deleteMessageForAll(chatId, messageId) {
+    const result = await messagesApi.deleteForAll(messageId);
+    get().setMessageDeleted(chatId, result);
+    return result;
+  },
+  async sendMessage(chatId, text, mentions = []) {
     const socket = get().socket;
     if (socket) {
-      socket.emit('message:send', { chatId, text });
+      await new Promise((resolve, reject) => {
+        socket.emit('message:send', { chatId, text, mentions }, (response) => {
+          if (!response || response.ok) {
+            resolve();
+          } else {
+            const err = new Error(response.message || 'Не удалось отправить сообщение');
+            err.status = response.status;
+            reject(err);
+          }
+        });
+      });
       return;
     }
-    const { message } = await messagesApi.sendMessage({ chatId, text });
+    const { message } = await messagesApi.sendMessage({ chatId, text, mentions });
     get().addMessage(chatId, message);
     get().updateChatLastMessage(chatId, message);
   },
@@ -354,5 +408,50 @@ export const useChatStore = create((set, get) => ({
         },
       };
     });
+  },
+  setMessageDeleted(chatId, { messageId, deletedForAll, deletedAt, deletedBy }) {
+    set((state) => {
+      const chatMessages = state.messages[chatId] || [];
+      const idx = chatMessages.findIndex((msg) => (msg.id || msg._id || msg.messageId) === messageId);
+      if (idx === -1) {
+        const placeholder = {
+          id: messageId,
+          chatId,
+          senderId: '',
+          text: null,
+          createdAt: deletedAt,
+          deletedForAll: !!deletedForAll,
+          deletedAt: deletedAt || new Date().toISOString(),
+          deletedBy: deletedBy || null,
+          reactions: [],
+        };
+        return {
+          messages: {
+            ...state.messages,
+            [chatId]: [...chatMessages, placeholder],
+          },
+        };
+      }
+
+      const updated = [...chatMessages];
+      updated[idx] = {
+        ...updated[idx],
+        deletedForAll: !!deletedForAll,
+        deletedAt: deletedAt || updated[idx].deletedAt || null,
+        deletedBy: deletedBy || updated[idx].deletedBy || null,
+        text: null,
+      };
+
+      return { messages: { ...state.messages, [chatId]: updated } };
+    });
+  },
+  setChatModeration(chatId, { muteUntil, rateLimitPerMinute }) {
+    set((state) => ({
+      chats: state.chats.map((chat) =>
+        chat.id === chatId
+          ? { ...chat, muteUntil: muteUntil || null, rateLimitPerMinute: rateLimitPerMinute ?? null }
+          : chat
+      ),
+    }));
   },
 }));

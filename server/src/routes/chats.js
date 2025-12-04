@@ -2,6 +2,7 @@ const express = require('express');
 const authMiddleware = require('../middleware/auth');
 const asyncHandler = require('../utils/asyncHandler');
 const chatService = require('../services/chatService');
+const auditService = require('../services/auditService');
 const { getIo } = require('../sockets');
 
 const router = express.Router();
@@ -208,6 +209,41 @@ router.delete(
     }
 
     res.json({ pinnedMessageIds });
+  })
+);
+
+router.patch(
+  '/:id/moderation',
+  asyncHandler(async (req, res) => {
+    const { muteUntil, rateLimitPerMinute } = req.body || {};
+    const moderation = await chatService.updateModeration({
+      chatId: req.params.id,
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      muteUntil,
+      rateLimitPerMinute,
+    });
+
+    const io = getIo();
+    if (io) {
+      io.to(`chat:${req.params.id}`).emit('chat:moderationUpdated', moderation);
+    }
+
+    res.json(moderation);
+  })
+);
+
+router.get(
+  '/:id/audit',
+  asyncHandler(async (req, res) => {
+    const { limit } = req.query || {};
+    const events = await auditService.listEvents({
+      chatId: req.params.id,
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      limit,
+    });
+    res.json({ events });
   })
 );
 

@@ -23,6 +23,8 @@ const ChatWindow = ({
   onPin,
   onUnpin,
   onToggleReaction,
+  auditLog,
+  onLoadAudit,
 }) => {
   const listRef = useRef(null);
   const typingTimer = useRef(null);
@@ -33,6 +35,9 @@ const ChatWindow = ({
   const [separatorCleared, setSeparatorCleared] = useState(false);
   const [messageText, setMessageText] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedMentions, setSelectedMentions] = useState([]);
+  const [auditVisible, setAuditVisible] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
 
   useEffect(() => {
     setShowSettings(false);
@@ -41,6 +46,8 @@ const ChatWindow = ({
     setSeparatorCleared(false);
     setMessageText('');
     setSearchTerm('');
+    setSelectedMentions([]);
+    setAuditVisible(false);
     if (typingTimer.current) {
       clearTimeout(typingTimer.current);
     }
@@ -105,6 +112,11 @@ const ChatWindow = ({
   const participantIds = useMemo(
     () => (chat.participants || []).map((p) => (p.id || p._id || p).toString()),
     [chat.participants]
+  );
+
+  const mentionableParticipants = useMemo(
+    () => (chat.participants || []).filter((p) => (p.id || p._id || p).toString() !== currentUserId?.toString()),
+    [chat.participants, currentUserId]
   );
 
   const otherUser = useMemo(() => {
@@ -180,8 +192,12 @@ const ChatWindow = ({
       return 'Этот пользователь заблокировал вас. Вы не можете отправлять сообщения в этом чате.';
     }
 
+    if (chat.type === 'group' && isMuted && !canManageGroup) {
+      return `Чат на паузе до ${muteUntilText}`;
+    }
+
     return '';
-  }, [chatBlocked, isBlockedByMe, isBlockedMe, isRemovedFromGroup]);
+  }, [chatBlocked, isBlockedByMe, isBlockedMe, isRemovedFromGroup, chat.type, isMuted, muteUntilText, canManageGroup]);
 
   const pinnedSet = useMemo(() => new Set(pinnedMessageIds || []), [pinnedMessageIds]);
   const pinnedMessages = useMemo(
@@ -196,6 +212,9 @@ const ChatWindow = ({
   const canPinMessages =
     chat.type === 'direct' || chat.createdBy === currentUserId || (chat.admins || []).includes(currentUserId);
   const canReact = !isRemovedFromGroup && !chatBlocked;
+  const isMuted = chat.muteUntil && new Date(chat.muteUntil).getTime() > Date.now();
+  const muteUntilText = isMuted ? new Date(chat.muteUntil).toLocaleString() : null;
+  const rateLimitPerMinute = chat.rateLimitPerMinute || null;
 
   const reactionOptions = ['👍', '❤️', '😂', '😮', '😢', '🎉', '🙏', '👏', '🔥', '✅'];
 
@@ -227,13 +246,21 @@ const ChatWindow = ({
     }
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const trimmed = messageText.trim();
     if (!trimmed) return;
     setUnreadSeparatorMessageId(null);
     setSeparatorCleared(true);
-    onSend(trimmed);
+    try {
+      await onSend(trimmed, selectedMentions);
+    } catch (err) {
+      const messageText = err?.response?.data?.message || err?.message || 'Не удалось отправить сообщение';
+      // eslint-disable-next-line no-alert
+      alert(messageText);
+      return;
+    }
     setMessageText('');
+    setSelectedMentions([]);
     if (typingActive.current) {
       onTypingStop && onTypingStop(chat.id);
     }
@@ -241,6 +268,97 @@ const ChatWindow = ({
     if (typingTimer.current) {
       clearTimeout(typingTimer.current);
     }
+  };
+
+  const handleDeleteForMe = async (messageId) => {
+    await onDeleteForMe(messageId);
+  };
+
+  const handleDeleteForAll = async (message) => {
+    try {
+      await onDeleteForAll(message.id || message._id);
+    } catch (err) {
+      const messageText = err?.response?.data?.message || err?.message || 'Не удалось удалить сообщение';
+      // eslint-disable-next-line no-alert
+      alert(messageText);
+    }
+  };
+
+  const addMention = (userId) => {
+    if (!userId) return;
+    if (selectedMentions.includes(userId)) return;
+    const participant = (chat.participants || []).find((p) => (p.id || p._id || p).toString() === userId);
+    if (!participant) return;
+    setSelectedMentions((prev) => [...prev, userId]);
+    const name = participant.displayName || participant.username || 'пользователь';
+    setMessageText((prev) => `${prev}${prev.endsWith(' ') || !prev ? '' : ' '}@${name} `);
+  };
+
+  const removeMention = (userId) => {
+    setSelectedMentions((prev) => prev.filter((id) => id !== userId));
+  };
+
+  const handleMutePreset = async (minutes) => {
+    const until = minutes ? new Date(Date.now() + minutes * 60 * 1000).toISOString() : null;
+    try {
+      await onUpdateModeration({ muteUntil: until });
+    } catch (err) {
+      const messageText = err?.response?.data?.message || err?.message || 'Не удалось обновить настройки';
+      // eslint-disable-next-line no-alert
+      alert(messageText);
+    }
+  };
+
+  const handleRateLimitPreset = async (limit) => {
+    try {
+      await onUpdateModeration({ rateLimitPerMinute: limit });
+    } catch (err) {
+      const messageText = err?.response?.data?.message || err?.message || 'Не удалось обновить лимит';
+      // eslint-disable-next-line no-alert
+      alert(messageText);
+    }
+  };
+
+  const getDisplayName = (userId) => {
+    const participant = (chat.participants || []).find(
+      (p) => (p.id || p._id || p).toString() === (userId || '').toString()
+    );
+    return participant?.displayName || participant?.username || userId || 'пользователь';
+  };
+
+  const formatAuditEvent = (event) => {
+    const actor = getDisplayName(event.actorId);
+    const meta = event.meta || {};
+    switch (event.type) {
+      case 'MESSAGE_DELETED_FOR_ALL':
+        return `${actor} удалил сообщение ${meta.messageId || ''}`;
+      case 'MUTE_SET':
+        return `${actor} включил паузу до ${meta.muteUntil ? new Date(meta.muteUntil).toLocaleString() : ''}`;
+      case 'MUTE_CLEARED':
+        return `${actor} снял паузу чата`;
+      case 'RATE_LIMIT_SET':
+        return `${actor} установил лимит ${meta.rateLimitPerMinute || ''}/мин`;
+      case 'RATE_LIMIT_CLEARED':
+        return `${actor} снял лимит сообщений`;
+      case 'PIN_ADDED':
+        return `${actor} закрепил сообщение ${meta.messageId || ''}`;
+      case 'PIN_REMOVED':
+        return `${actor} открепил сообщение ${meta.messageId || ''}`;
+      default:
+        return `${actor} ${event.type}`;
+    }
+  };
+
+  const toggleAudit = async () => {
+    if (!auditVisible) {
+      setAuditLoading(true);
+      try {
+        await onLoadAudit();
+      } finally {
+        setAuditLoading(false);
+      }
+    }
+    setAuditVisible((prev) => !prev);
   };
 
   const showInput = !isRemovedFromGroup && !chatBlocked;
@@ -316,15 +434,108 @@ const ChatWindow = ({
           onChange={(e) => setSearchTerm(e.target.value)}
         />
       </div>
+      {mentionableParticipants.length > 0 && (
+        <div className="chat-window__mentions">
+          <div className="chat-window__mentions-title">Упоминания</div>
+          <div className="chat-window__mentions-controls">
+            <select
+              onChange={(e) => {
+                addMention(e.target.value);
+                e.target.value = '';
+              }}
+              defaultValue=""
+            >
+              <option value="">@ Упомянуть</option>
+              {mentionableParticipants.map((p) => (
+                <option key={p.id || p._id || p} value={p.id || p._id || p}>
+                  {p.displayName || p.username || 'Участник'}
+                </option>
+              ))}
+            </select>
+            <div className="mention-chips">
+              {selectedMentions.map((id) => {
+                const p = (chat.participants || []).find((participant) => (participant.id || participant._id || participant).toString() === id);
+                return (
+                  <span key={id} className="mention-chip">
+                    @{p?.displayName || p?.username || 'пользователь'}
+                    <button type="button" className="mention-chip__remove" onClick={() => removeMention(id)}>
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+      {canManageGroup && chat.type === 'group' && (
+        <div className="chat-window__moderation">
+          <div className="chat-window__moderation-title">Модерация</div>
+          <div className="chat-window__moderation-row">
+            <span>Mute:</span>
+            <button type="button" className="secondary-btn" onClick={() => handleMutePreset(15)}>
+              15 мин
+            </button>
+            <button type="button" className="secondary-btn" onClick={() => handleMutePreset(60)}>
+              1 час
+            </button>
+            <button type="button" className="secondary-btn" onClick={() => handleMutePreset(null)}>
+              Снять
+            </button>
+            {muteUntilText && <span className="muted">до {muteUntilText}</span>}
+          </div>
+          <div className="chat-window__moderation-row">
+            <span>Лимит:</span>
+            {[1, 2, 5].map((limit) => (
+              <button
+                key={`limit-${limit}`}
+                type="button"
+                className={`secondary-btn ${rateLimitPerMinute === limit ? 'secondary-btn--active' : ''}`}
+                onClick={() => handleRateLimitPreset(limit)}
+              >
+                {limit}/мин
+              </button>
+            ))}
+            <button type="button" className="secondary-btn" onClick={() => handleRateLimitPreset(null)}>
+              Без лимита
+            </button>
+            {rateLimitPerMinute && <span className="muted">текущий: {rateLimitPerMinute}/мин</span>}
+          </div>
+          <div className="chat-window__moderation-row">
+            <button type="button" className="secondary-btn" onClick={toggleAudit}>
+              Журнал
+            </button>
+            {auditLoading && <span className="muted">Загрузка...</span>}
+          </div>
+          {auditVisible && (
+            <div className="audit-log">
+              {auditLog.length === 0 && <div className="muted">События отсутствуют</div>}
+              {auditLog.map((event) => (
+                <div key={event.id} className="audit-log__item">
+                  <div className="audit-log__message">{formatAuditEvent(event)}</div>
+                  <div className="audit-log__meta">{new Date(event.createdAt).toLocaleString()}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {pinnedMessages.length > 0 && (
         <div className="chat-window__pins">
           <div className="chat-window__pins-title">Закрепы</div>
           <div className="chat-window__pins-list">
-            {pinnedMessages.map(({ id, message }) => (
-              <button key={id} type="button" className="secondary-btn" onClick={() => jumpToMessage(id)}>
-                {message ? message.text : 'Сообщение'}
-              </button>
-            ))}
+            {pinnedMessages.map(({ id, message }) => {
+              const label = message
+                ? message.deletedForAll
+                  ? 'Сообщение удалено'
+                  : message.text || 'Сообщение'
+                : 'Сообщение';
+              return (
+                <button key={id} type="button" className="secondary-btn" onClick={() => jumpToMessage(id)}>
+                  {label}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -351,6 +562,15 @@ const ChatWindow = ({
             acc[reaction.emoji] = list;
             return acc;
           }, {});
+          const isMentioned = (message.mentions || []).some(
+            (id) => id && id.toString() === currentId
+          );
+
+          const isDeletedForAll = !!message.deletedForAll;
+          const createdAtMs = message.createdAt ? new Date(message.createdAt).getTime() : Date.now();
+          const deleteWindowMs = 10 * 60 * 1000;
+          const canDeleteForAll =
+            isMine && !isDeletedForAll && Date.now() - createdAtMs <= deleteWindowMs;
 
           return (
             <div key={messageId || message.id} id={`msg-${messageId}`}>
@@ -360,14 +580,21 @@ const ChatWindow = ({
                     <span>— Непрочитанные сообщения —</span>
                   </div>
                 )}
-              <div className={`message-row ${isMine ? 'message-row--mine' : 'message-row--incoming'}`}>
+              <div
+                className={`message-row ${isMine ? 'message-row--mine' : 'message-row--incoming'} ${
+                  isMentioned ? 'message-row--mention' : ''
+                }`}
+              >
                 <div className="message-content">
                   <div className="message-author">
                     <span className="message-author__name">{authorName}</span>
                     {authorMeta && <span className="message-author__meta">{authorMeta}</span>}
+                    {isMentioned && <span className="mention-badge">Вас упомянули</span>}
                   </div>
-                  <div className="message-text">{message.text}</div>
-                  {canPinMessages && (
+                  <div className={`message-text ${isDeletedForAll ? 'message-text--deleted' : ''}`}>
+                    {isDeletedForAll ? 'Сообщение удалено' : message.text}
+                  </div>
+                  {canPinMessages && !isDeletedForAll && (
                     <div className="message-actions">
                       {pinnedSet.has(messageId?.toString()) ? (
                         <button type="button" className="link-btn" onClick={() => onUnpin(messageId)}>
@@ -376,6 +603,18 @@ const ChatWindow = ({
                       ) : (
                         <button type="button" className="link-btn" onClick={() => onPin(messageId)}>
                           Закрепить
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {!isDeletedForAll && (
+                    <div className="message-actions">
+                      <button type="button" className="link-btn" onClick={() => handleDeleteForMe(messageId)}>
+                        Удалить у меня
+                      </button>
+                      {canDeleteForAll && (
+                        <button type="button" className="link-btn" onClick={() => handleDeleteForAll(message)}>
+                          Удалить у всех (10 минут)
                         </button>
                       )}
                     </div>
@@ -491,6 +730,8 @@ ChatWindow.propTypes = {
     lastReadAt: PropTypes.oneOfType([PropTypes.string, PropTypes.instanceOf(Date)]),
     removedParticipants: PropTypes.array,
     blocks: PropTypes.array,
+    muteUntil: PropTypes.oneOfType([PropTypes.string, PropTypes.instanceOf(Date)]),
+    rateLimitPerMinute: PropTypes.number,
   }).isRequired,
   messages: PropTypes.arrayOf(
     PropTypes.shape({
@@ -499,8 +740,12 @@ ChatWindow.propTypes = {
       chatId: PropTypes.string.isRequired,
       senderId: PropTypes.string.isRequired,
       sender: PropTypes.object,
-      text: PropTypes.string.isRequired,
+      text: PropTypes.string,
       createdAt: PropTypes.string,
+      mentions: PropTypes.arrayOf(PropTypes.string),
+      deletedForAll: PropTypes.bool,
+      deletedAt: PropTypes.string,
+      deletedBy: PropTypes.string,
     })
   ).isRequired,
   lastReadAt: PropTypes.oneOfType([PropTypes.string, PropTypes.instanceOf(Date)]),
@@ -518,6 +763,19 @@ ChatWindow.propTypes = {
   onPin: PropTypes.func,
   onUnpin: PropTypes.func,
   onToggleReaction: PropTypes.func,
+  onDeleteForMe: PropTypes.func,
+  onDeleteForAll: PropTypes.func,
+  onUpdateModeration: PropTypes.func,
+  auditLog: PropTypes.arrayOf(
+    PropTypes.shape({
+      id: PropTypes.string,
+      actorId: PropTypes.string,
+      type: PropTypes.string,
+      meta: PropTypes.object,
+      createdAt: PropTypes.string,
+    })
+  ),
+  onLoadAudit: PropTypes.func,
 };
 
 ChatWindow.defaultProps = {
@@ -535,6 +793,11 @@ ChatWindow.defaultProps = {
   onPin: () => {},
   onUnpin: () => {},
   onToggleReaction: () => {},
+  onDeleteForMe: () => {},
+  onDeleteForAll: () => {},
+  onUpdateModeration: () => {},
+  auditLog: [],
+  onLoadAudit: () => {},
 };
 
 export default ChatWindow;

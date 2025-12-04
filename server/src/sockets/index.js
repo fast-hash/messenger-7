@@ -122,17 +122,25 @@ const setupSockets = (httpServer) => {
       }
     });
 
-    socket.on('message:send', async ({ chatId, text }) => {
+    socket.on('message:send', async ({ chatId, text, mentions }, callback) => {
       try {
         const message = await messageService.sendMessage({
           chatId,
           senderId: socket.user.id,
+          senderRole: socket.user.role,
           text,
+          mentions,
         });
 
         io.to(`chat:${chatId}`).emit('message:new', { message });
+        if (callback) {
+          callback({ ok: true });
+        }
       } catch (error) {
         console.error('Error sending message', error);
+        if (callback) {
+          callback({ ok: false, message: error.message, status: error.status || 500 });
+        }
       }
     });
 

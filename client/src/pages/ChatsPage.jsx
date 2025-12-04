@@ -47,6 +47,11 @@ const ChatsPage = () => {
     unpinMessage,
     pinnedByChat,
     toggleReaction,
+    deleteMessageForMe,
+    deleteMessageForAll,
+    updateModeration,
+    auditLogs,
+    loadAudit,
   } = useChatStore();
 
   const [showChoice, setShowChoice] = useState(false);
@@ -344,7 +349,7 @@ const ChatsPage = () => {
             typingUsers={typingUsers}
             onToggleNotifications={toggleNotifications}
             onOpenManage={openManageModal}
-            onSend={(text) => sendMessage(selectedChatId, text)}
+            onSend={(text, mentions) => sendMessage(selectedChatId, text, mentions)}
             onTypingStart={(chatId) => socket?.emit('typing:start', { chatId })}
             onTypingStop={(chatId) => socket?.emit('typing:stop', { chatId })}
             socketConnected={!!socket}
@@ -354,6 +359,11 @@ const ChatsPage = () => {
             onPin={(messageId) => pinMessage(selectedChatId, messageId)}
             onUnpin={(messageId) => unpinMessage(selectedChatId, messageId)}
             onToggleReaction={(messageId, emoji) => toggleReaction(selectedChatId, messageId, emoji)}
+            onDeleteForMe={(messageId) => deleteMessageForMe(selectedChatId, messageId)}
+            onDeleteForAll={(messageId) => deleteMessageForAll(selectedChatId, messageId)}
+            onUpdateModeration={(payload) => updateModeration(selectedChatId, payload)}
+            auditLog={auditLogs[selectedChatId] || []}
+            onLoadAudit={() => loadAudit(selectedChatId)}
           />
         </div>
       )}

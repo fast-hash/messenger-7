@@ -88,6 +88,14 @@ const chatSchema = new mongoose.Schema(
       ],
       default: [],
     },
+    muteUntil: {
+      type: Date,
+      default: null,
+    },
+    rateLimitPerMinute: {
+      type: Number,
+      default: null,
+    },
     updatedAt: {
       type: Date,
       default: Date.now,
