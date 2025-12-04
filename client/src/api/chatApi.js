@@ -79,3 +79,18 @@ export const clearBlocksAdmin = async (chatId) => {
   const { data } = await httpClient.delete(`/api/admin/chats/${chatId}/blocks`);
   return data;
 };
+
+export const listPins = async (chatId) => {
+  const { data } = await httpClient.get(`/api/chats/${chatId}/pins`);
+  return data;
+};
+
+export const pinMessage = async (chatId, messageId) => {
+  const { data } = await httpClient.post(`/api/chats/${chatId}/pins`, { messageId });
+  return data;
+};
+
+export const unpinMessage = async (chatId, messageId) => {
+  const { data } = await httpClient.delete(`/api/chats/${chatId}/pins/${messageId}`);
+  return data;
+};

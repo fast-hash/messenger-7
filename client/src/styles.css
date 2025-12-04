@@ -889,3 +889,87 @@ button {
   font-size: 13px;
   color: #4b5563;
 }
+
+.chat-window__pins {
+  padding: 8px 12px;
+  background: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.chat-window__pins-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.chat-window__pins-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.message-actions {
+  margin-top: 6px;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #2563eb;
+  cursor: pointer;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.message-reactions {
+  margin-top: 8px;
+}
+
+.message-reactions__selected {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.reaction-badge {
+  border: 1px solid #e5e7eb;
+  background: #f3f4f6;
+  padding: 4px 8px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.reaction-badge--mine {
+  border-color: #2563eb;
+  background: #dbeafe;
+}
+
+.message-reactions__picker {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.reaction-picker__btn {
+  border: 1px dashed #e5e7eb;
+  background: #fff;
+  padding: 4px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.chat-window__search {
+  padding: 8px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+.chat-window__search input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+}

@@ -25,7 +25,7 @@ import { formatRole } from '../utils/roleLabels';
 
 const ChatsPage = () => {
   const navigate = useNavigate();
-  const { user, logout } = useAuthStore();
+  const { user, logout, dndEnabled, dndUntil, updatePreferences } = useAuthStore();
   const {
     chats,
     selectedChatId,
@@ -41,6 +41,12 @@ const ChatsPage = () => {
     upsertChat,
     socket,
     toggleNotifications,
+    setDndStatus,
+    fetchPins,
+    pinMessage,
+    unpinMessage,
+    pinnedByChat,
+    toggleReaction,
   } = useChatStore();
 
   const [showChoice, setShowChoice] = useState(false);
@@ -67,6 +73,16 @@ const ChatsPage = () => {
     connectSocket(user.id);
     loadChats(user.id);
   }, [user, connectSocket, loadChats, reset, navigate]);
+
+  useEffect(() => {
+    setDndStatus(dndEnabled, dndUntil);
+  }, [dndEnabled, dndUntil, setDndStatus]);
+
+  useEffect(() => {
+    if (selectedChatId) {
+      fetchPins(selectedChatId);
+    }
+  }, [selectedChatId, fetchPins]);
 
   const selectedChat = useMemo(
     () => chats.find((chat) => chat.id === selectedChatId) || null,
@@ -268,6 +284,16 @@ const ChatsPage = () => {
               <div className="user-name">{user.displayName || user.username}</div>
               <div className="user-meta">{formatRole(user.role)} · {user.department || 'Отдел не указан'}</div>
             </div>
+            <label className="field inline" style={{ marginRight: '1rem' }}>
+              <input
+                type="checkbox"
+                checked={!!dndEnabled}
+                onChange={async () => {
+                  await updatePreferences({ dndEnabled: !dndEnabled, dndUntil: null });
+                }}
+              />
+              DND
+            </label>
             <button
               type="button"
               className="secondary-btn"
@@ -324,6 +350,10 @@ const ChatsPage = () => {
             socketConnected={!!socket}
             onBlock={handleBlockChat}
             onUnblock={handleUnblockChat}
+            pinnedMessageIds={pinnedByChat[selectedChatId] || selectedChat.pinnedMessageIds || []}
+            onPin={(messageId) => pinMessage(selectedChatId, messageId)}
+            onUnpin={(messageId) => unpinMessage(selectedChatId, messageId)}
+            onToggleReaction={(messageId, emoji) => toggleReaction(selectedChatId, messageId, emoji)}
           />
         </div>
       )}

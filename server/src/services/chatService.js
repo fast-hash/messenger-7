@@ -37,6 +37,15 @@ const mapUser = (user) => ({
   jobTitle: user.jobTitle,
 });
 
+const ensureChatParticipant = (chat, userId) => {
+  const participantIds = (chat.participants || []).map((p) => (p._id ? p._id.toString() : p.toString()));
+  if (!participantIds.includes(userId.toString())) {
+    const error = new Error('Недостаточно прав для операции');
+    error.status = 403;
+    throw error;
+  }
+};
+
 const findReadState = (chatDoc, userId) =>
   (chatDoc.readState || []).find((entry) => entry.user && entry.user.toString() === userId.toString());
 
@@ -105,6 +114,9 @@ const toChatDto = (chatDoc, currentUserId) => {
     removed: isRemoved,
     notificationsEnabled: chatDoc.notificationsEnabled !== false,
     lastReadAt: currentUserId ? findReadState(chatDoc, currentUserId)?.lastReadAt || null : null,
+    pinnedMessageIds: (chatDoc.pinnedMessageIds || []).map((id) =>
+      id._id ? id._id.toString() : id.toString()
+    ),
   };
 };
 
@@ -599,6 +611,72 @@ const markChatRead = async ({ chatId, userId }) => {
   return { ok: true, lastReadAt: now };
 };
 
+const assertMessageInChat = async ({ chatId, messageId }) => {
+  const message = await Message.findById(messageId);
+  if (!message || message.chat.toString() !== chatId.toString()) {
+    const error = new Error('Сообщение не найдено в этом чате');
+    error.status = 400;
+    throw error;
+  }
+};
+
+const ensurePinPermission = (chat, userId) => {
+  if (chat.type === 'group') {
+    ensureGroupAdmin(chat, userId);
+  } else {
+    ensureChatParticipant(chat, userId);
+  }
+};
+
+const pinMessage = async ({ chatId, userId, messageId }) => {
+  const chat = await Chat.findById(chatId);
+  if (!chat) {
+    const error = new Error('Чат не найден');
+    error.status = 404;
+    throw error;
+  }
+
+  ensurePinPermission(chat, userId);
+  await assertMessageInChat({ chatId, messageId });
+
+  const existing = (chat.pinnedMessageIds || []).map((id) => id.toString());
+  if (!existing.includes(messageId.toString())) {
+    chat.pinnedMessageIds.push(messageId);
+    await chat.save();
+  }
+
+  return { pinnedMessageIds: (chat.pinnedMessageIds || []).map((id) => id.toString()) };
+};
+
+const unpinMessage = async ({ chatId, userId, messageId }) => {
+  const chat = await Chat.findById(chatId);
+  if (!chat) {
+    const error = new Error('Чат не найден');
+    error.status = 404;
+    throw error;
+  }
+
+  ensurePinPermission(chat, userId);
+  chat.pinnedMessageIds = (chat.pinnedMessageIds || []).filter(
+    (id) => id.toString() !== messageId.toString()
+  );
+  await chat.save();
+
+  return { pinnedMessageIds: (chat.pinnedMessageIds || []).map((id) => id.toString()) };
+};
+
+const listPins = async ({ chatId, userId }) => {
+  const chat = await Chat.findById(chatId);
+  if (!chat) {
+    const error = new Error('Чат не найден');
+    error.status = 404;
+    throw error;
+  }
+
+  ensureChatParticipant(chat, userId);
+  return { pinnedMessageIds: (chat.pinnedMessageIds || []).map((id) => id.toString()) };
+};
+
 module.exports = {
   getOrCreateDirectChat,
   getUserChats,
@@ -616,4 +694,7 @@ module.exports = {
   listDirectChatsForAdmin,
   removeAllBlocksFromDirectChat,
   markChatRead,
+  pinMessage,
+  unpinMessage,
+  listPins,
 };

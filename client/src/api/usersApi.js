@@ -9,3 +9,8 @@ export const currentUser = async () => {
   const { data } = await httpClient.get('/api/users/me');
   return data;
 };
+
+export const updatePreferences = async (payload) => {
+  const { data } = await httpClient.patch('/api/users/me/preferences', payload);
+  return data;
+};

@@ -10,7 +10,21 @@ router.use(authMiddleware);
 router.get(
   '/me',
   asyncHandler(async (req, res) => {
-    res.json({ user: req.user });
+    const user = await userService.getUserById(req.user.id);
+    res.json({ user });
+  })
+);
+
+router.patch(
+  '/me/preferences',
+  asyncHandler(async (req, res) => {
+    const { dndEnabled, dndUntil } = req.body || {};
+    const user = await userService.updatePreferences({
+      userId: req.user.id,
+      dndEnabled,
+      dndUntil,
+    });
+    res.json({ user });
   })
 );
 

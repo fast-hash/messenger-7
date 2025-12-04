@@ -12,6 +12,7 @@ const mapChat = (chat, currentUserId) => {
     lastReadAt: chat.lastReadAt || null,
     removedParticipants: chat.removedParticipants || [],
     blocks: chat.blocks || [],
+    pinnedMessageIds: chat.pinnedMessageIds || [],
   };
 
   if (chat.type === 'group') {
@@ -37,6 +38,18 @@ export const useChatStore = create((set, get) => ({
   messageMeta: {},
   typing: {},
   socket: null,
+  dndEnabled: false,
+  dndUntil: null,
+  pinnedByChat: {},
+  setDndStatus(dndEnabled, dndUntil) {
+    set({ dndEnabled: !!dndEnabled, dndUntil: dndUntil || null });
+  },
+  isDndActive() {
+    const state = get();
+    if (!state.dndEnabled) return false;
+    if (!state.dndUntil) return true;
+    return new Date(state.dndUntil).getTime() > Date.now();
+  },
   connectSocket(currentUserId) {
     if (get().socket) {
       return;
@@ -74,7 +87,8 @@ export const useChatStore = create((set, get) => ({
       }
 
       const notificationsEnabled = chatState?.notificationsEnabled !== false;
-      if (!isOwn && notificationsEnabled) {
+      const dndActive = state.isDndActive();
+      if (!isOwn && notificationsEnabled && !dndActive) {
         playIncomingSound();
 
         if (document.hidden || !isCurrent) {
@@ -113,6 +127,14 @@ export const useChatStore = create((set, get) => ({
       console.error('Socket connect error', err);
     });
 
+    socket.on('chat:pinsUpdated', ({ chatId, pinnedMessageIds }) => {
+      get().setChatPins(chatId, pinnedMessageIds);
+    });
+
+    socket.on('message:reactionsUpdated', ({ chatId, messageId, reactions }) => {
+      get().setMessageReactions(chatId, messageId, reactions);
+    });
+
     set({ socket });
   },
   setSocket(socket) {
@@ -123,13 +145,25 @@ export const useChatStore = create((set, get) => ({
     if (socket) {
       socket.disconnect();
     }
-    set({ chats: [], selectedChatId: null, messages: {}, messageMeta: {}, typing: {}, socket: null });
+    set({
+      chats: [],
+      selectedChatId: null,
+      messages: {},
+      messageMeta: {},
+      typing: {},
+      socket: null,
+      pinnedByChat: {},
+    });
   },
   async loadChats(currentUserId) {
     const { chats } = await chatApi.getChats();
     const mapped = chats.map((chat) => mapChat(chat, currentUserId));
     mapped.sort((a, b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt));
-    set({ chats: mapped });
+    const pinnedByChat = mapped.reduce((acc, chat) => {
+      acc[chat.id] = chat.pinnedMessageIds || [];
+      return acc;
+    }, {});
+    set({ chats: mapped, pinnedByChat });
 
     // Сразу подписываемся на комнаты всех чатов, чтобы получать presence и новые сообщения в списке.
     const socket = get().socket;
@@ -169,6 +203,22 @@ export const useChatStore = create((set, get) => ({
     if (lastReadAt) {
       get().setChatLastRead(chatId, lastReadAt);
     }
+  },
+  async fetchPins(chatId) {
+    const { pinnedMessageIds } = await chatApi.listPins(chatId);
+    get().setChatPins(chatId, pinnedMessageIds);
+  },
+  async pinMessage(chatId, messageId) {
+    const { pinnedMessageIds } = await chatApi.pinMessage(chatId, messageId);
+    get().setChatPins(chatId, pinnedMessageIds);
+  },
+  async unpinMessage(chatId, messageId) {
+    const { pinnedMessageIds } = await chatApi.unpinMessage(chatId, messageId);
+    get().setChatPins(chatId, pinnedMessageIds);
+  },
+  async toggleReaction(chatId, messageId, emoji) {
+    const { reactions } = await messagesApi.toggleReaction(messageId, emoji);
+    get().setMessageReactions(chatId, messageId, reactions);
   },
   async sendMessage(chatId, text) {
     const socket = get().socket;
@@ -269,12 +319,40 @@ export const useChatStore = create((set, get) => ({
       const without = state.chats.filter((c) => c.id !== mapped.id);
       const next = [...without, mapped];
       next.sort((a, b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt));
-      return { chats: next };
+      return {
+        chats: next,
+        pinnedByChat: { ...state.pinnedByChat, [mapped.id]: mapped.pinnedMessageIds || [] },
+      };
     });
 
     const socket = get().socket;
     if (socket && !mapped.removed) {
       socket.emit('chats:join', { chatId: mapped.id });
     }
+  },
+  setChatPins(chatId, pinnedMessageIds) {
+    set((state) => ({
+      chats: state.chats.map((chat) =>
+        chat.id === chatId ? { ...chat, pinnedMessageIds: pinnedMessageIds || [] } : chat
+      ),
+      pinnedByChat: { ...state.pinnedByChat, [chatId]: pinnedMessageIds || [] },
+    }));
+  },
+  setMessageReactions(chatId, messageId, reactions) {
+    set((state) => {
+      const chatMessages = state.messages[chatId] || [];
+      const updatedMessages = chatMessages.map((message) =>
+        (message.id === messageId || message._id === messageId)
+          ? { ...message, reactions: reactions || [] }
+          : message
+      );
+
+      return {
+        messages: {
+          ...state.messages,
+          [chatId]: updatedMessages,
+        },
+      };
+    });
   },
 }));

@@ -13,6 +13,8 @@ const toUserDto = (userDoc) => ({
   role: userDoc.role,
   department: userDoc.department,
   jobTitle: userDoc.jobTitle,
+  dndEnabled: userDoc.dndEnabled || false,
+  dndUntil: userDoc.dndUntil || null,
   createdAt: userDoc.createdAt,
 });
 
@@ -114,8 +116,50 @@ const searchUsers = async ({ query, excludeUserId }) => {
   return users.map(toUserDto);
 };
 
+const getUserById = async (userId) => {
+  const user = await User.findById(userId);
+  if (!user) {
+    const error = new Error('User not found');
+    error.status = 404;
+    throw error;
+  }
+  return toUserDto(user);
+};
+
+const updatePreferences = async ({ userId, dndEnabled, dndUntil }) => {
+  const user = await User.findById(userId);
+  if (!user) {
+    const error = new Error('User not found');
+    error.status = 404;
+    throw error;
+  }
+
+  if (typeof dndEnabled !== 'undefined') {
+    user.dndEnabled = Boolean(dndEnabled);
+  }
+
+  if (typeof dndUntil !== 'undefined') {
+    if (dndUntil === null || dndUntil === '') {
+      user.dndUntil = null;
+    } else {
+      const untilDate = new Date(dndUntil);
+      if (Number.isNaN(untilDate.getTime())) {
+        const error = new Error('Invalid dndUntil value');
+        error.status = 400;
+        throw error;
+      }
+      user.dndUntil = untilDate;
+    }
+  }
+
+  await user.save();
+  return toUserDto(user);
+};
+
 module.exports = {
   registerUser,
   authenticateUser,
   searchUsers,
+  getUserById,
+  updatePreferences,
 };

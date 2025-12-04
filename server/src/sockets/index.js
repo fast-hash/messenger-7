@@ -18,6 +18,8 @@ const parseCookies = (cookieHeader) => {
   }, {});
 };
 
+let ioInstance = null;
+
 const setupSockets = (httpServer) => {
   const io = new Server(httpServer, {
     cors: {
@@ -25,6 +27,8 @@ const setupSockets = (httpServer) => {
       credentials: true,
     },
   });
+
+  ioInstance = io;
 
   io.use((socket, next) => {
     try {
@@ -176,4 +180,7 @@ const setupSockets = (httpServer) => {
   return io;
 };
 
+const getIo = () => ioInstance;
+
 module.exports = setupSockets;
+module.exports.getIo = getIo;

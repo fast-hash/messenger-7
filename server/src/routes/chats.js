@@ -2,6 +2,7 @@ const express = require('express');
 const authMiddleware = require('../middleware/auth');
 const asyncHandler = require('../utils/asyncHandler');
 const chatService = require('../services/chatService');
+const { getIo } = require('../sockets');
 
 const router = express.Router();
 
@@ -153,6 +154,60 @@ router.delete(
   asyncHandler(async (req, res) => {
     const chat = await chatService.unblockUserInDirectChat(req.params.id, req.user.id);
     res.json({ chat });
+  })
+);
+
+router.get(
+  '/:id/pins',
+  asyncHandler(async (req, res) => {
+    const { pinnedMessageIds } = await chatService.listPins({
+      chatId: req.params.id,
+      userId: req.user.id,
+    });
+    res.json({ pinnedMessageIds });
+  })
+);
+
+router.post(
+  '/:id/pins',
+  asyncHandler(async (req, res) => {
+    const { messageId } = req.body || {};
+    const { pinnedMessageIds } = await chatService.pinMessage({
+      chatId: req.params.id,
+      userId: req.user.id,
+      messageId,
+    });
+
+    const io = getIo();
+    if (io) {
+      io.to(`chat:${req.params.id}`).emit('chat:pinsUpdated', {
+        chatId: req.params.id,
+        pinnedMessageIds,
+      });
+    }
+
+    res.status(201).json({ pinnedMessageIds });
+  })
+);
+
+router.delete(
+  '/:id/pins/:messageId',
+  asyncHandler(async (req, res) => {
+    const { pinnedMessageIds } = await chatService.unpinMessage({
+      chatId: req.params.id,
+      userId: req.user.id,
+      messageId: req.params.messageId,
+    });
+
+    const io = getIo();
+    if (io) {
+      io.to(`chat:${req.params.id}`).emit('chat:pinsUpdated', {
+        chatId: req.params.id,
+        pinnedMessageIds,
+      });
+    }
+
+    res.json({ pinnedMessageIds });
   })
 );
 

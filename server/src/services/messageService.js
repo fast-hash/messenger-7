@@ -42,6 +42,10 @@ const toMessageDto = (messageDoc, text) => {
     senderId: messageDoc.sender.toString(),
     sender: senderDto,
     text,
+    reactions: (messageDoc.reactions || []).map((reaction) => ({
+      emoji: reaction.emoji,
+      userId: reaction.userId ? reaction.userId.toString() : null,
+    })),
     createdAt: messageDoc.createdAt,
   };
 };
@@ -171,7 +175,57 @@ const getMessagesForChat = async ({ chatId, viewerId }) => {
   return { messages: results, lastReadAt: readState ? readState.lastReadAt : null };
 };
 
+const toggleReaction = async ({ messageId, userId, emoji }) => {
+  if (!messageId || !userId || !emoji) {
+    const error = new Error('messageId, userId and emoji are required');
+    error.status = 400;
+    throw error;
+  }
+
+  const message = await Message.findById(messageId);
+  if (!message) {
+    const error = new Error('Message not found');
+    error.status = 404;
+    throw error;
+  }
+
+  const chat = await Chat.findById(message.chat);
+  if (!chat) {
+    const error = new Error('Chat not found');
+    error.status = 404;
+    throw error;
+  }
+
+  ensureParticipant(chat, userId);
+
+  const trimmedEmoji = emoji.trim();
+  if (!trimmedEmoji) {
+    const error = new Error('Emoji is required');
+    error.status = 400;
+    throw error;
+  }
+
+  const existingIndex = (message.reactions || []).findIndex(
+    (reaction) => reaction.emoji === trimmedEmoji && reaction.userId.toString() === userId.toString()
+  );
+
+  if (existingIndex >= 0) {
+    message.reactions.splice(existingIndex, 1);
+  } else {
+    message.reactions.push({ emoji: trimmedEmoji, userId });
+  }
+
+  await message.save();
+  const reactions = (message.reactions || []).map((reaction) => ({
+    emoji: reaction.emoji,
+    userId: reaction.userId ? reaction.userId.toString() : null,
+  }));
+
+  return { chatId: chat._id.toString(), messageId: message._id.toString(), reactions };
+};
+
 module.exports = {
   sendMessage,
   getMessagesForChat,
+  toggleReaction,
 };
