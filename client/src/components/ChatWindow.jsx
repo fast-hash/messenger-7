@@ -4,6 +4,7 @@ import VkStyleInput from './VkStyleInput';
 import { formatRole } from '../utils/roleLabels';
 import { ensureNotificationPermission } from '../utils/notifications';
 import { formatMessageDate } from '../utils/dateUtils';
+import * as attachmentsApi from '../api/attachmentsApi';
 
 const ChatWindow = ({
   chat,
@@ -29,6 +30,7 @@ const ChatWindow = ({
   const listRef = useRef(null);
   const typingTimer = useRef(null);
   const typingActive = useRef(false);
+  const fileInputRef = useRef(null);
   const [showSettings, setShowSettings] = useState(false);
   const [unreadSeparatorMessageId, setUnreadSeparatorMessageId] = useState(null);
   const [showManageModal, setShowManageModal] = useState(false);
@@ -38,6 +40,8 @@ const ChatWindow = ({
   const [selectedMentions, setSelectedMentions] = useState([]);
   const [auditVisible, setAuditVisible] = useState(false);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
 
   useEffect(() => {
     setShowSettings(false);
@@ -48,6 +52,8 @@ const ChatWindow = ({
     setSearchTerm('');
     setSelectedMentions([]);
     setAuditVisible(false);
+    setPendingAttachments([]);
+    setUploadingAttachments(false);
     if (typingTimer.current) {
       clearTimeout(typingTimer.current);
     }
@@ -248,11 +254,12 @@ const ChatWindow = ({
 
   const handleSend = async () => {
     const trimmed = messageText.trim();
-    if (!trimmed) return;
+    const hasAttachments = pendingAttachments.length > 0;
+    if (!trimmed && !hasAttachments) return;
     setUnreadSeparatorMessageId(null);
     setSeparatorCleared(true);
     try {
-      await onSend(trimmed, selectedMentions);
+      await onSend(trimmed, selectedMentions, pendingAttachments.map((att) => att.id));
     } catch (err) {
       const messageText = err?.response?.data?.message || err?.message || 'Не удалось отправить сообщение';
       // eslint-disable-next-line no-alert
@@ -261,6 +268,7 @@ const ChatWindow = ({
     }
     setMessageText('');
     setSelectedMentions([]);
+    setPendingAttachments([]);
     if (typingActive.current) {
       onTypingStop && onTypingStop(chat.id);
     }
@@ -318,6 +326,40 @@ const ChatWindow = ({
       alert(messageText);
     }
   };
+
+  const handleAttachmentSelect = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+    setUploadingAttachments(true);
+    try {
+      const { attachments } = await attachmentsApi.uploadAttachments(chat.id, files);
+      setPendingAttachments((prev) => [...prev, ...(attachments || [])]);
+    } catch (err) {
+      const messageText = err?.response?.data?.message || err?.message || 'Не удалось загрузить вложения';
+      // eslint-disable-next-line no-alert
+      alert(messageText);
+    } finally {
+      setUploadingAttachments(false);
+      if (event.target) {
+        event.target.value = '';
+      }
+    }
+  };
+
+  const removePendingAttachment = (id) => {
+    setPendingAttachments((prev) => prev.filter((att) => att.id !== id));
+  };
+
+  const getAttachmentUrl = (id) => attachmentsApi.getAttachmentUrl(id);
+
+  const formatSize = (size) => {
+    if (!size && size !== 0) return '';
+    if (size < 1024) return `${size} Б`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} КБ`;
+    return `${(size / (1024 * 1024)).toFixed(1)} МБ`;
+  };
+
+  const isImage = (mime) => mime && mime.startsWith('image/');
 
   const getDisplayName = (userId) => {
     const participant = (chat.participants || []).find(
@@ -528,7 +570,7 @@ const ChatWindow = ({
               const label = message
                 ? message.deletedForAll
                   ? 'Сообщение удалено'
-                  : message.text || 'Сообщение'
+                  : message.text || (message.attachments?.length ? 'Вложение' : 'Сообщение')
                 : 'Сообщение';
               return (
                 <button key={id} type="button" className="secondary-btn" onClick={() => jumpToMessage(id)}>
@@ -565,6 +607,7 @@ const ChatWindow = ({
           const isMentioned = (message.mentions || []).some(
             (id) => id && id.toString() === currentId
           );
+          const attachments = message.attachments || [];
 
           const isDeletedForAll = !!message.deletedForAll;
           const createdAtMs = message.createdAt ? new Date(message.createdAt).getTime() : Date.now();
@@ -592,8 +635,41 @@ const ChatWindow = ({
                     {isMentioned && <span className="mention-badge">Вас упомянули</span>}
                   </div>
                   <div className={`message-text ${isDeletedForAll ? 'message-text--deleted' : ''}`}>
-                    {isDeletedForAll ? 'Сообщение удалено' : message.text}
+                    {isDeletedForAll
+                      ? 'Сообщение удалено'
+                      : message.text || (attachments.length ? 'Вложение' : '')}
                   </div>
+                  {!isDeletedForAll && attachments.length > 0 && (
+                    <div className="message-attachments">
+                      {attachments.map((att) => {
+                        const attId = att.id || att._id;
+                        const downloadUrl = getAttachmentUrl(attId);
+                        return (
+                          <div key={attId} className="attachment-card">
+                            {isImage(att.mimeType) ? (
+                              <a href={downloadUrl} target="_blank" rel="noreferrer">
+                                <img
+                                  src={downloadUrl}
+                                  alt={att.originalName || 'Вложение'}
+                                  className="attachment-card__image"
+                                />
+                              </a>
+                            ) : (
+                              <div className="attachment-card__file">
+                                <div className="attachment-card__meta">
+                                  <div className="attachment-card__name">{att.originalName}</div>
+                                  <div className="attachment-card__size">{formatSize(att.size)}</div>
+                                </div>
+                                <a className="link-btn" href={downloadUrl} target="_blank" rel="noreferrer">
+                                  Скачать
+                                </a>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   {canPinMessages && !isDeletedForAll && (
                     <div className="message-actions">
                       {pinnedSet.has(messageId?.toString()) ? (
@@ -657,6 +733,40 @@ const ChatWindow = ({
         })}
       </div>
       {typingHintVisible && <div className="typing-hint">{typingHint}</div>}
+      <div className="chat-input-actions">
+        <button
+          type="button"
+          className="secondary-btn"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={!socketConnected || !!bottomNotice || uploadingAttachments}
+        >
+          📎 Прикрепить
+        </button>
+        <input
+          type="file"
+          ref={fileInputRef}
+          multiple
+          accept="image/*,application/pdf,text/plain,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          onChange={handleAttachmentSelect}
+          style={{ display: 'none' }}
+        />
+        {uploadingAttachments && <span className="muted">Загрузка...</span>}
+      </div>
+      {pendingAttachments.length > 0 && (
+        <div className="attachments-queue">
+          {pendingAttachments.map((att) => (
+            <div key={att.id} className="attachments-queue__item">
+              <div>
+                <div className="attachments-queue__name">{att.originalName}</div>
+                <div className="attachments-queue__size muted">{formatSize(att.size)}</div>
+              </div>
+              <button type="button" className="link-btn" onClick={() => removePendingAttachment(att.id)}>
+                Убрать
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="chat-input-bar">
         {bottomNotice ? (
           <div className="chat-input-banner">{bottomNotice}</div>
@@ -746,6 +856,15 @@ ChatWindow.propTypes = {
       deletedForAll: PropTypes.bool,
       deletedAt: PropTypes.string,
       deletedBy: PropTypes.string,
+      attachments: PropTypes.arrayOf(
+        PropTypes.shape({
+          id: PropTypes.string,
+          _id: PropTypes.string,
+          originalName: PropTypes.string,
+          mimeType: PropTypes.string,
+          size: PropTypes.number,
+        })
+      ),
     })
   ).isRequired,
   lastReadAt: PropTypes.oneOfType([PropTypes.string, PropTypes.instanceOf(Date)]),

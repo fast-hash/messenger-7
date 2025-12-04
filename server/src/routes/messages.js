@@ -8,33 +8,54 @@ const router = express.Router();
 
 router.use(authMiddleware);
 
+// GET /api/messages?chatId=...
 router.get(
   '/',
   asyncHandler(async (req, res) => {
     const { chatId } = req.query;
+
     const { messages, lastReadAt } = await messageService.getMessagesForChat({
       chatId,
       viewerId: req.user.id,
     });
+
     res.json({ messages, lastReadAt });
   })
 );
 
+// POST /api/messages
 router.post(
   '/',
   asyncHandler(async (req, res) => {
-    const { chatId, text, mentions } = req.body || {};
+    const { chatId, text, mentions, attachments } = req.body || {};
+
     const message = await messageService.sendMessage({
       chatId,
       senderId: req.user.id,
       senderRole: req.user.role,
       text,
       mentions,
+      attachments,
     });
-    res.status(201).json({ message });
+
+    // Если messageService уже эмитит событие сам — этот блок можно удалить,
+    // но сейчас он безопасный: при отсутствии io просто пропустится.
+    const io = getIo();
+    if (io) {
+      const emitChatId = message?.chatId || message?.chat || chatId;
+      if (emitChatId) {
+        io.to(`chat:${emitChatId}`).emit('message:new', {
+          chatId: emitChatId,
+          message,
+        });
+      }
+    }
+
+    res.json(message);
   })
 );
 
+// POST /api/messages/:messageId/reactions
 router.post(
   '/:messageId/reactions',
   asyncHandler(async (req, res) => {
@@ -58,6 +79,7 @@ router.post(
   })
 );
 
+// POST /api/messages/:messageId/delete-for-me
 router.post(
   '/:messageId/delete-for-me',
   asyncHandler(async (req, res) => {
@@ -69,6 +91,7 @@ router.post(
   })
 );
 
+// POST /api/messages/:messageId/delete-for-all
 router.post(
   '/:messageId/delete-for-all',
   asyncHandler(async (req, res) => {

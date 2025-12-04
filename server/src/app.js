@@ -6,6 +6,7 @@ const cookieParser = require('cookie-parser');
 const config = require('./config/env');
 const authRoutes = require('./routes/auth');
 const chatsRoutes = require('./routes/chats');
+const attachmentsRoutes = require('./routes/attachments');
 const messagesRoutes = require('./routes/messages');
 const usersRoutes = require('./routes/users');
 const adminRoutes = require('./routes/admin');
@@ -26,6 +27,7 @@ app.use(cookieParser());
 
 app.use('/api/auth', authRoutes);
 app.use('/api/chats', chatsRoutes);
+app.use('/api', attachmentsRoutes);
 app.use('/api/messages', messagesRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/admin', adminRoutes);
