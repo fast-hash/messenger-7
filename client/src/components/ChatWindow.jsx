@@ -24,6 +24,9 @@ const ChatWindow = ({
   onPin,
   onUnpin,
   onToggleReaction,
+  onDeleteForMe,
+  onDeleteForAll,
+  onUpdateModeration,
   auditLog,
   onLoadAudit,
 }) => {
@@ -43,8 +46,10 @@ const ChatWindow = ({
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
 
+  const participants = chat?.participants || [];
+  const safeMessages = messages || [];
+
   useEffect(() => {
-    setShowSettings(false);
     setUnreadSeparatorMessageId(null);
     setShowManageModal(false);
     setSeparatorCleared(false);
@@ -57,11 +62,11 @@ const ChatWindow = ({
     if (typingTimer.current) {
       clearTimeout(typingTimer.current);
     }
-    if (typingActive.current && onTypingStop) {
-      onTypingStop(chat.id);
+    if (typingActive.current && onTypingStop && chatId) {
+      onTypingStop(chatId);
     }
     typingActive.current = false;
-  }, [chat.id, onTypingStop]);
+  }, [chatId, onTypingStop]);
 
   const getSenderId = (message) =>
     message?.senderId || message?.sender?.id || message?.sender?._id || message?.sender || null;
@@ -71,22 +76,22 @@ const ChatWindow = ({
       if (typingTimer.current) {
         clearTimeout(typingTimer.current);
       }
-      if (typingActive.current && onTypingStop) {
-        onTypingStop(chat.id);
+      if (typingActive.current && onTypingStop && chatId) {
+        onTypingStop(chatId);
       }
       typingActive.current = false;
     },
-    [chat.id, onTypingStop]
+    [chatId, onTypingStop]
   );
 
   useEffect(() => {
-    if (!chat || unreadSeparatorMessageId || separatorCleared) return;
-    if (!messages || !messages.length) return;
+    if (!chatId || unreadSeparatorMessageId || separatorCleared) return;
+    if (!safeMessages.length) return;
 
-    const threshold = lastReadAt || chat.lastReadAt;
+    const threshold = lastReadAt || chat?.lastReadAt;
     const currentUserIdStr = currentUserId?.toString();
 
-    const separatorId = messages.find((message) => {
+    const separatorId = safeMessages.find((message) => {
       const senderId = getSenderId(message);
       const isOwnMessage = senderId && currentUserIdStr && senderId.toString() === currentUserIdStr;
       if (isOwnMessage) return false;
@@ -101,55 +106,55 @@ const ChatWindow = ({
     if (separatorId) {
       setUnreadSeparatorMessageId(separatorId.id || separatorId._id || null);
     }
-  }, [chat, messages, lastReadAt, unreadSeparatorMessageId, separatorCleared, currentUserId]);
+  }, [chatId, safeMessages, chat?.lastReadAt, lastReadAt, unreadSeparatorMessageId, separatorCleared, currentUserId]);
 
   useEffect(() => {
     if (listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [safeMessages]);
 
-  const filteredMessages = useMemo(() => {
-    const query = searchTerm.trim().toLowerCase();
-    if (!query) return messages;
-    return messages.filter((message) => (message.text || '').toLowerCase().includes(query));
-  }, [messages, searchTerm]);
+const filteredMessages = useMemo(() => {
+  const query = (searchTerm || '').trim().toLowerCase();
+  if (!query) return safeMessages;
+  return safeMessages.filter((message) => (message.text || '').toLowerCase().includes(query));
+}, [safeMessages, searchTerm]);
 
-  const participantIds = useMemo(
-    () => (chat.participants || []).map((p) => (p.id || p._id || p).toString()),
-    [chat.participants]
-  );
+const participantIds = useMemo(
+  () => (participants || []).map((p) => (p.id || p._id || p).toString()),
+  [participants]
+);
 
-  const mentionableParticipants = useMemo(
-    () => (chat.participants || []).filter((p) => (p.id || p._id || p).toString() !== currentUserId?.toString()),
-    [chat.participants, currentUserId]
-  );
+const mentionableParticipants = useMemo(
+  () => (participants || []).filter((p) => (p.id || p._id || p).toString() !== currentUserId?.toString()),
+  [participants, currentUserId]
+);
 
   const otherUser = useMemo(() => {
-    if (chat.type !== 'direct') return null;
-    return chat.otherUser || chat.participants.find((p) => p.id !== currentUserId) || null;
-  }, [chat.otherUser, chat.participants, chat.type, currentUserId]);
+    if (chatType !== 'direct') return null;
+    return chat?.otherUser || participants.find((p) => p.id !== currentUserId) || null;
+  }, [chat?.otherUser, participants, chatType, currentUserId]);
 
   const currentId = currentUserId?.toString();
   const isRemovedFromGroup =
-    chat.type === 'group' &&
+    chatType === 'group' &&
     (!participantIds.includes(currentId) ||
-      (chat.removedParticipants || []).some((id) => (id?.toString?.() || id) === currentId) ||
-      chat.removed);
+      (chat?.removedParticipants || []).some((id) => (id?.toString?.() || id) === currentId) ||
+      chat?.removed);
 
   const isBlockedByMe =
-    chat.type === 'direct' &&
-    (chat.blocks || []).some((b) => b.by === currentUserId && b.target === otherUser?.id);
+    chatType === 'direct' &&
+    (chat?.blocks || []).some((b) => b.by === currentUserId && b.target === otherUser?.id);
   const isBlockedMe =
-    chat.type === 'direct' &&
-    (chat.blocks || []).some((b) => b.by === otherUser?.id && b.target === currentUserId);
-  const chatBlocked = chat.type === 'direct' && (isBlockedByMe || isBlockedMe);
+    chatType === 'direct' &&
+    (chat?.blocks || []).some((b) => b.by === otherUser?.id && b.target === currentUserId);
+  const chatBlocked = chatType === 'direct' && (isBlockedByMe || isBlockedMe);
 
   const typingHint = useMemo(() => {
     if (isRemovedFromGroup || chatBlocked) return '';
-    if (chat.type === 'group') {
+    if (chatType === 'group') {
       if (typingUsers?.length) {
-        const names = chat.participants
+        const names = participants
           ?.filter((p) => typingUsers.includes(p.id))
           .map((p) => p.displayName || p.username);
         if (names?.length) {
@@ -162,21 +167,21 @@ const ChatWindow = ({
     return isOtherTyping
       ? `Пользователь ${otherUser?.displayName || otherUser?.username || 'собеседник'} печатает...`
       : '';
-  }, [chat.participants, chat.type, typingUsers, otherUser, isRemovedFromGroup, chatBlocked]);
+  }, [participants, chatType, typingUsers, otherUser, isRemovedFromGroup, chatBlocked]);
 
   const canManageGroup =
-    chat.type === 'group' &&
-    (chat.createdBy === currentUserId || (chat.admins || []).includes(currentUserId));
+    chatType === 'group' &&
+    (chat?.createdBy === currentUserId || (chat?.admins || []).includes(currentUserId));
 
   const headerTitle =
-    chat.type === 'group'
-      ? chat.title || 'Групповой чат'
+    chatType === 'group'
+      ? chat?.title || 'Групповой чат'
       : otherUser?.displayName || otherUser?.username;
   const headerMeta =
-    chat.type === 'group'
-      ? `Участников: ${chat.participants?.length || 0}`
+    chatType === 'group'
+      ? `Участников: ${participants.length}`
       : `${formatRole(otherUser?.role)} · ${otherUser?.department || 'Отдел не указан'} · ${
-          chat.isOnline ? 'онлайн' : 'офлайн'
+          chat?.isOnline ? 'онлайн' : 'офлайн'
         }`;
 
   const bottomNotice = useMemo(() => {
@@ -198,29 +203,29 @@ const ChatWindow = ({
       return 'Этот пользователь заблокировал вас. Вы не можете отправлять сообщения в этом чате.';
     }
 
-    if (chat.type === 'group' && isMuted && !canManageGroup) {
+    if (chatType === 'group' && isMuted && !canManageGroup) {
       return `Чат на паузе до ${muteUntilText}`;
     }
 
     return '';
-  }, [chatBlocked, isBlockedByMe, isBlockedMe, isRemovedFromGroup, chat.type, isMuted, muteUntilText, canManageGroup]);
+  }, [chatBlocked, isBlockedByMe, isBlockedMe, isRemovedFromGroup, chatType, isMuted, muteUntilText, canManageGroup]);
 
   const pinnedSet = useMemo(() => new Set(pinnedMessageIds || []), [pinnedMessageIds]);
   const pinnedMessages = useMemo(
     () =>
       (pinnedMessageIds || []).map((id) => {
-        const found = messages.find((message) => (message.id || message._id || '').toString() === id);
+        const found = safeMessages.find((message) => (message.id || message._id || '').toString() === id);
         return { id, message: found };
       }),
-    [messages, pinnedMessageIds]
+    [safeMessages, pinnedMessageIds]
   );
 
   const canPinMessages =
-    chat.type === 'direct' || chat.createdBy === currentUserId || (chat.admins || []).includes(currentUserId);
+    chatType === 'direct' || chat?.createdBy === currentUserId || (chat?.admins || []).includes(currentUserId);
   const canReact = !isRemovedFromGroup && !chatBlocked;
-  const isMuted = chat.muteUntil && new Date(chat.muteUntil).getTime() > Date.now();
-  const muteUntilText = isMuted ? new Date(chat.muteUntil).toLocaleString() : null;
-  const rateLimitPerMinute = chat.rateLimitPerMinute || null;
+  const isMuted = chat?.muteUntil && new Date(chat.muteUntil).getTime() > Date.now();
+  const muteUntilText = isMuted ? new Date(chat?.muteUntil).toLocaleString() : null;
+  const rateLimitPerMinute = chat?.rateLimitPerMinute || null;
 
   const reactionOptions = ['👍', '❤️', '😂', '😮', '😢', '🎉', '🙏', '👏', '🔥', '✅'];
 
@@ -228,8 +233,8 @@ const ChatWindow = ({
     setMessageText(value);
     const hasText = value.trim().length > 0;
 
-    if (hasText && !typingActive.current) {
-      onTypingStart && onTypingStart(chat.id);
+    if (hasText && !typingActive.current && chatId) {
+      onTypingStart && onTypingStart(chatId);
       typingActive.current = true;
     }
 
@@ -238,15 +243,15 @@ const ChatWindow = ({
     }
 
     typingTimer.current = setTimeout(() => {
-      if (typingActive.current) {
-        onTypingStop && onTypingStop(chat.id);
+      if (typingActive.current && chatId) {
+        onTypingStop && onTypingStop(chatId);
       }
       typingActive.current = false;
     }, 1200);
 
     if (!hasText) {
-      if (typingActive.current) {
-        onTypingStop && onTypingStop(chat.id);
+      if (typingActive.current && chatId) {
+        onTypingStop && onTypingStop(chatId);
       }
       typingActive.current = false;
     }
@@ -269,8 +274,8 @@ const ChatWindow = ({
     setMessageText('');
     setSelectedMentions([]);
     setPendingAttachments([]);
-    if (typingActive.current) {
-      onTypingStop && onTypingStop(chat.id);
+    if (typingActive.current && chatId) {
+      onTypingStop && onTypingStop(chatId);
     }
     typingActive.current = false;
     if (typingTimer.current) {
@@ -295,7 +300,7 @@ const ChatWindow = ({
   const addMention = (userId) => {
     if (!userId) return;
     if (selectedMentions.includes(userId)) return;
-    const participant = (chat.participants || []).find((p) => (p.id || p._id || p).toString() === userId);
+    const participant = participants.find((p) => (p.id || p._id || p).toString() === userId);
     if (!participant) return;
     setSelectedMentions((prev) => [...prev, userId]);
     const name = participant.displayName || participant.username || 'пользователь';
@@ -332,7 +337,8 @@ const ChatWindow = ({
     if (!files.length) return;
     setUploadingAttachments(true);
     try {
-      const { attachments } = await attachmentsApi.uploadAttachments(chat.id, files);
+      if (!chatId) return;
+      const { attachments } = await attachmentsApi.uploadAttachments(chatId, files);
       setPendingAttachments((prev) => [...prev, ...(attachments || [])]);
     } catch (err) {
       const messageText = err?.response?.data?.message || err?.message || 'Не удалось загрузить вложения';
@@ -362,7 +368,7 @@ const ChatWindow = ({
   const isImage = (mime) => mime && mime.startsWith('image/');
 
   const getDisplayName = (userId) => {
-    const participant = (chat.participants || []).find(
+    const participant = participants.find(
       (p) => (p.id || p._id || p).toString() === (userId || '').toString()
     );
     return participant?.displayName || participant?.username || userId || 'пользователь';
@@ -418,10 +424,12 @@ const ChatWindow = ({
       if (typingTimer.current) {
         clearTimeout(typingTimer.current);
       }
-      onTypingStop && onTypingStop(chat.id);
+      if (chatId) {
+        onTypingStop && onTypingStop(chatId);
+      }
       typingActive.current = false;
     }
-  }, [showInput, onTypingStop, chat.id]);
+  }, [showInput, onTypingStop, chatId]);
 
   return (
     <div className="chat-window">
@@ -431,13 +439,13 @@ const ChatWindow = ({
           <div className="chat-window__meta">{headerMeta}</div>
         </div>
         <div className="chat-window__actions">
-          {(canManageGroup || chat.type === 'direct') && (
+          {(canManageGroup || chatType === 'direct') && (
             <button
               type="button"
               className="secondary-btn"
               onClick={() => {
-                if (chat.type === 'group') {
-                  onOpenManage(chat.id);
+                if (chatType === 'group') {
+                  onOpenManage(chatId);
                 } else {
                   setShowManageModal(true);
                 }
@@ -454,12 +462,12 @@ const ChatWindow = ({
               <label className="field inline">
                 <input
                   type="checkbox"
-                  checked={chat.notificationsEnabled}
+                  checked={!!chat?.notificationsEnabled}
                   onChange={async () => {
-                    if (!chat.notificationsEnabled) {
+                    if (!chat?.notificationsEnabled) {
                       await ensureNotificationPermission();
                     }
-                    onToggleNotifications(chat.id);
+                    onToggleNotifications(chatId);
                   }}
                 />
                 Получать уведомления по этому чату
@@ -496,7 +504,7 @@ const ChatWindow = ({
             </select>
             <div className="mention-chips">
               {selectedMentions.map((id) => {
-                const p = (chat.participants || []).find((participant) => (participant.id || participant._id || participant).toString() === id);
+                const p = participants.find((participant) => (participant.id || participant._id || participant).toString() === id);
                 return (
                   <span key={id} className="mention-chip">
                     @{p?.displayName || p?.username || 'пользователь'}
@@ -510,7 +518,7 @@ const ChatWindow = ({
           </div>
         </div>
       )}
-      {canManageGroup && chat.type === 'group' && (
+      {canManageGroup && chatType === 'group' && (
         <div className="chat-window__moderation">
           <div className="chat-window__moderation-title">Модерация</div>
           <div className="chat-window__moderation-row">
@@ -779,7 +787,7 @@ const ChatWindow = ({
           />
         )}
       </div>
-      {showManageModal && chat.type === 'direct' && (
+      {showManageModal && chatType === 'direct' && (
         <div className="modal-backdrop" onClick={() => setShowManageModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal__header">
@@ -799,7 +807,7 @@ const ChatWindow = ({
                   type="button"
                   className="primary-btn"
                   onClick={async () => {
-                    await onUnblock(chat.id);
+                    await onUnblock(chatId);
                     setShowManageModal(false);
                   }}
                 >
@@ -810,7 +818,7 @@ const ChatWindow = ({
                   type="button"
                   className="primary-btn"
                   onClick={async () => {
-                    await onBlock(chat.id);
+                    await onBlock(chatId);
                     setShowManageModal(false);
                   }}
                 >
