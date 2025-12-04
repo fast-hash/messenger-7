@@ -6,6 +6,16 @@ import { ensureNotificationPermission } from '../utils/notifications';
 import { formatMessageDate } from '../utils/dateUtils';
 import * as attachmentsApi from '../api/attachmentsApi';
 
+const getParticipantId = (p) => {
+  const raw = p?.id || p?._id || p;
+  if (!raw) return null;
+  if (typeof raw === 'string') return raw;
+  if (typeof raw?.toString === 'function') return raw.toString();
+  return null;
+};
+
+const getMessageId = (m) => m?.id || m?._id || null;
+
 const ChatWindow = ({
   chat,
   messages,
@@ -34,6 +44,7 @@ const ChatWindow = ({
   const typingTimer = useRef(null);
   const typingActive = useRef(false);
   const fileInputRef = useRef(null);
+
   const [showSettings, setShowSettings] = useState(false);
   const [unreadSeparatorMessageId, setUnreadSeparatorMessageId] = useState(null);
   const [showManageModal, setShowManageModal] = useState(false);
@@ -46,8 +57,12 @@ const ChatWindow = ({
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
 
+  // Safe aliases (не падать на медленной загрузке данных)
+  const chatId = (chat?.id || chat?._id || '').toString();
+  const chatType = chat?.type || 'direct';
   const participants = chat?.participants || [];
-  const safeMessages = messages || [];
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  const currentId = currentUserId?.toString();
 
   useEffect(() => {
     setUnreadSeparatorMessageId(null);
@@ -59,6 +74,8 @@ const ChatWindow = ({
     setAuditVisible(false);
     setPendingAttachments([]);
     setUploadingAttachments(false);
+    setShowSettings(false);
+
     if (typingTimer.current) {
       clearTimeout(typingTimer.current);
     }
@@ -84,6 +101,7 @@ const ChatWindow = ({
     [chatId, onTypingStop]
   );
 
+  // Unread separator
   useEffect(() => {
     if (!chatId || unreadSeparatorMessageId || separatorCleared) return;
     if (!safeMessages.length) return;
@@ -91,51 +109,63 @@ const ChatWindow = ({
     const threshold = lastReadAt || chat?.lastReadAt;
     const currentUserIdStr = currentUserId?.toString();
 
-    const separatorId = safeMessages.find((message) => {
+    const separatorMsg = safeMessages.find((message) => {
       const senderId = getSenderId(message);
       const isOwnMessage = senderId && currentUserIdStr && senderId.toString() === currentUserIdStr;
       if (isOwnMessage) return false;
 
-      if (!threshold) {
-        return true;
-      }
-
+      if (!threshold) return true;
       return new Date(message.createdAt) > new Date(threshold);
     });
 
-    if (separatorId) {
-      setUnreadSeparatorMessageId(separatorId.id || separatorId._id || null);
+    if (separatorMsg) {
+      const id = getMessageId(separatorMsg);
+      if (id) setUnreadSeparatorMessageId(id.toString());
     }
   }, [chatId, safeMessages, chat?.lastReadAt, lastReadAt, unreadSeparatorMessageId, separatorCleared, currentUserId]);
 
+  // Auto-scroll
   useEffect(() => {
     if (listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
   }, [safeMessages]);
 
-const filteredMessages = useMemo(() => {
-  const query = (searchTerm || '').trim().toLowerCase();
-  if (!query) return safeMessages;
-  return safeMessages.filter((message) => (message.text || '').toLowerCase().includes(query));
-}, [safeMessages, searchTerm]);
+  // Local search (E2E-friendly)
+  const filteredMessages = useMemo(() => {
+    const query = (searchTerm || '').trim().toLowerCase();
+    if (!query) return safeMessages;
+    return safeMessages.filter((message) => (message.text || '').toLowerCase().includes(query));
+  }, [safeMessages, searchTerm]);
 
-const participantIds = useMemo(
-  () => (participants || []).map((p) => (p.id || p._id || p).toString()),
-  [participants]
-);
+  const participantIds = useMemo(
+    () => (participants || []).map(getParticipantId).filter(Boolean),
+    [participants]
+  );
 
-const mentionableParticipants = useMemo(
-  () => (participants || []).filter((p) => (p.id || p._id || p).toString() !== currentUserId?.toString()),
-  [participants, currentUserId]
-);
+  const mentionableParticipants = useMemo(
+    () =>
+      (participants || []).filter((p) => {
+        const id = getParticipantId(p);
+        return id && id !== currentId;
+      }),
+    [participants, currentId]
+  );
 
   const otherUser = useMemo(() => {
     if (chatType !== 'direct') return null;
-    return chat?.otherUser || participants.find((p) => p.id !== currentUserId) || null;
-  }, [chat?.otherUser, participants, chatType, currentUserId]);
+    if (chat?.otherUser) return chat.otherUser;
 
-  const currentId = currentUserId?.toString();
+    return (
+      (participants || []).find((p) => {
+        const pid = getParticipantId(p);
+        return pid && currentId && pid !== currentId;
+      }) || null
+    );
+  }, [chatType, chat?.otherUser, participants, currentId]);
+
+  const otherUserId = (otherUser?.id || otherUser?._id || otherUser || '')?.toString?.() || '';
+
   const isRemovedFromGroup =
     chatType === 'group' &&
     (!participantIds.includes(currentId) ||
@@ -144,39 +174,24 @@ const mentionableParticipants = useMemo(
 
   const isBlockedByMe =
     chatType === 'direct' &&
-    (chat?.blocks || []).some((b) => b.by === currentUserId && b.target === otherUser?.id);
+    (chat?.blocks || []).some((b) => (b.by?.toString?.() || b.by) === currentId && (b.target?.toString?.() || b.target) === otherUserId);
+
   const isBlockedMe =
     chatType === 'direct' &&
-    (chat?.blocks || []).some((b) => b.by === otherUser?.id && b.target === currentUserId);
-  const chatBlocked = chatType === 'direct' && (isBlockedByMe || isBlockedMe);
+    (chat?.blocks || []).some((b) => (b.by?.toString?.() || b.by) === otherUserId && (b.target?.toString?.() || b.target) === currentId);
 
-  const typingHint = useMemo(() => {
-    if (isRemovedFromGroup || chatBlocked) return '';
-    if (chatType === 'group') {
-      if (typingUsers?.length) {
-        const names = participants
-          ?.filter((p) => typingUsers.includes(p.id))
-          .map((p) => p.displayName || p.username);
-        if (names?.length) {
-          return `${names.join(', ')} печатает...`;
-        }
-      }
-      return '';
-    }
-    const isOtherTyping = typingUsers?.includes(otherUser?.id);
-    return isOtherTyping
-      ? `Пользователь ${otherUser?.displayName || otherUser?.username || 'собеседник'} печатает...`
-      : '';
-  }, [participants, chatType, typingUsers, otherUser, isRemovedFromGroup, chatBlocked]);
+  const chatBlocked = chatType === 'direct' && (isBlockedByMe || isBlockedMe);
 
   const canManageGroup =
     chatType === 'group' &&
-    (chat?.createdBy === currentUserId || (chat?.admins || []).includes(currentUserId));
+    ((chat?.createdBy?.toString?.() || chat?.createdBy) === currentId ||
+      (chat?.admins || []).map((x) => x?.toString?.() || x).includes(currentId));
 
   const headerTitle =
     chatType === 'group'
       ? chat?.title || 'Групповой чат'
-      : otherUser?.displayName || otherUser?.username;
+      : otherUser?.displayName || otherUser?.username || 'Диалог';
+
   const headerMeta =
     chatType === 'group'
       ? `Участников: ${participants.length}`
@@ -184,9 +199,18 @@ const mentionableParticipants = useMemo(
           chat?.isOnline ? 'онлайн' : 'офлайн'
         }`;
 
+  // Moderation derived before bottomNotice (иначе TDZ)
+  const isMuted = !!(chat?.muteUntil && new Date(chat.muteUntil).getTime() > Date.now());
+  const muteUntilText = isMuted ? new Date(chat?.muteUntil).toLocaleString() : null;
+  const rateLimitPerMinute = chat?.rateLimitPerMinute || null;
+
   const bottomNotice = useMemo(() => {
     if (isRemovedFromGroup) {
       return 'Вы удалены из этой группы. Вы можете просматривать историю сообщений, но отправка новых сообщений недоступна.';
+    }
+
+    if (chatType === 'group' && isMuted && !canManageGroup) {
+      return `Чат на паузе до ${muteUntilText}`;
     }
 
     if (!chatBlocked) return '';
@@ -203,31 +227,46 @@ const mentionableParticipants = useMemo(
       return 'Этот пользователь заблокировал вас. Вы не можете отправлять сообщения в этом чате.';
     }
 
-    if (chatType === 'group' && isMuted && !canManageGroup) {
-      return `Чат на паузе до ${muteUntilText}`;
-    }
-
     return '';
   }, [chatBlocked, isBlockedByMe, isBlockedMe, isRemovedFromGroup, chatType, isMuted, muteUntilText, canManageGroup]);
 
-  const pinnedSet = useMemo(() => new Set(pinnedMessageIds || []), [pinnedMessageIds]);
+  const pinnedSet = useMemo(() => new Set((pinnedMessageIds || []).map((x) => x?.toString?.() || x)), [pinnedMessageIds]);
+
   const pinnedMessages = useMemo(
     () =>
-      (pinnedMessageIds || []).map((id) => {
-        const found = safeMessages.find((message) => (message.id || message._id || '').toString() === id);
+      (pinnedMessageIds || []).map((idRaw) => {
+        const id = (idRaw?.toString?.() || idRaw || '').toString();
+        const found = safeMessages.find((message) => (getMessageId(message)?.toString?.() || '') === id);
         return { id, message: found };
       }),
     [safeMessages, pinnedMessageIds]
   );
 
   const canPinMessages =
-    chatType === 'direct' || chat?.createdBy === currentUserId || (chat?.admins || []).includes(currentUserId);
-  const canReact = !isRemovedFromGroup && !chatBlocked;
-  const isMuted = chat?.muteUntil && new Date(chat.muteUntil).getTime() > Date.now();
-  const muteUntilText = isMuted ? new Date(chat?.muteUntil).toLocaleString() : null;
-  const rateLimitPerMinute = chat?.rateLimitPerMinute || null;
+    chatType === 'direct' ||
+    (chat?.createdBy?.toString?.() || chat?.createdBy) === currentId ||
+    (chat?.admins || []).map((x) => x?.toString?.() || x).includes(currentId);
 
+  const canReact = !isRemovedFromGroup && !chatBlocked;
   const reactionOptions = ['👍', '❤️', '😂', '😮', '😢', '🎉', '🙏', '👏', '🔥', '✅'];
+
+  const typingHint = useMemo(() => {
+    if (isRemovedFromGroup || chatBlocked) return '';
+    if (chatType === 'group') {
+      if (typingUsers?.length) {
+        const names = (participants || [])
+          .filter((p) => typingUsers.includes(getParticipantId(p)))
+          .map((p) => p.displayName || p.username);
+        if (names?.length) return `${names.join(', ')} печатает...`;
+      }
+      return '';
+    }
+
+    const isOtherTyping = typingUsers?.includes(otherUserId);
+    return isOtherTyping
+      ? `Пользователь ${otherUser?.displayName || otherUser?.username || 'собеседник'} печатает...`
+      : '';
+  }, [participants, chatType, typingUsers, otherUser, otherUserId, isRemovedFromGroup, chatBlocked]);
 
   const handleInputChange = (value) => {
     setMessageText(value);
@@ -261,54 +300,75 @@ const mentionableParticipants = useMemo(
     const trimmed = messageText.trim();
     const hasAttachments = pendingAttachments.length > 0;
     if (!trimmed && !hasAttachments) return;
+
     setUnreadSeparatorMessageId(null);
     setSeparatorCleared(true);
+
     try {
-      await onSend(trimmed, selectedMentions, pendingAttachments.map((att) => att.id));
+      const attachmentIds = pendingAttachments
+        .map((att) => (att?.id || att?._id || '').toString())
+        .filter(Boolean);
+
+      await onSend(trimmed, selectedMentions, attachmentIds);
     } catch (err) {
-      const messageText = err?.response?.data?.message || err?.message || 'Не удалось отправить сообщение';
+      const text = err?.response?.data?.message || err?.message || 'Не удалось отправить сообщение';
       // eslint-disable-next-line no-alert
-      alert(messageText);
+      alert(text);
       return;
     }
+
     setMessageText('');
     setSelectedMentions([]);
     setPendingAttachments([]);
+
     if (typingActive.current && chatId) {
       onTypingStop && onTypingStop(chatId);
     }
     typingActive.current = false;
+
     if (typingTimer.current) {
       clearTimeout(typingTimer.current);
     }
   };
 
   const handleDeleteForMe = async (messageId) => {
-    await onDeleteForMe(messageId);
+    const id = (messageId?.toString?.() || messageId || '').toString();
+    if (!id) return;
+    await onDeleteForMe(id);
   };
 
   const handleDeleteForAll = async (message) => {
     try {
-      await onDeleteForAll(message.id || message._id);
+      const id = (getMessageId(message)?.toString?.() || '').toString();
+      if (!id) return;
+      await onDeleteForAll(id);
     } catch (err) {
-      const messageText = err?.response?.data?.message || err?.message || 'Не удалось удалить сообщение';
+      const text = err?.response?.data?.message || err?.message || 'Не удалось удалить сообщение';
       // eslint-disable-next-line no-alert
-      alert(messageText);
+      alert(text);
     }
   };
 
-  const addMention = (userId) => {
+  const addMention = (userIdRaw) => {
+    const userId = (userIdRaw || '').toString();
     if (!userId) return;
-    if (selectedMentions.includes(userId)) return;
-    const participant = participants.find((p) => (p.id || p._id || p).toString() === userId);
-    if (!participant) return;
-    setSelectedMentions((prev) => [...prev, userId]);
-    const name = participant.displayName || participant.username || 'пользователь';
-    setMessageText((prev) => `${prev}${prev.endsWith(' ') || !prev ? '' : ' '}@${name} `);
+
+    setSelectedMentions((prev) => {
+      if (prev.includes(userId)) return prev;
+
+      const participant = (participants || []).find((p) => getParticipantId(p) === userId);
+      if (!participant) return prev;
+
+      const name = participant.displayName || participant.username || 'пользователь';
+      setMessageText((prevText) => `${prevText}${prevText.endsWith(' ') || !prevText ? '' : ' '}@${name} `);
+
+      return [...prev, userId];
+    });
   };
 
   const removeMention = (userId) => {
-    setSelectedMentions((prev) => prev.filter((id) => id !== userId));
+    const id = (userId || '').toString();
+    setSelectedMentions((prev) => prev.filter((x) => x !== id));
   };
 
   const handleMutePreset = async (minutes) => {
@@ -316,9 +376,9 @@ const mentionableParticipants = useMemo(
     try {
       await onUpdateModeration({ muteUntil: until });
     } catch (err) {
-      const messageText = err?.response?.data?.message || err?.message || 'Не удалось обновить настройки';
+      const text = err?.response?.data?.message || err?.message || 'Не удалось обновить настройки';
       // eslint-disable-next-line no-alert
-      alert(messageText);
+      alert(text);
     }
   };
 
@@ -326,34 +386,40 @@ const mentionableParticipants = useMemo(
     try {
       await onUpdateModeration({ rateLimitPerMinute: limit });
     } catch (err) {
-      const messageText = err?.response?.data?.message || err?.message || 'Не удалось обновить лимит';
+      const text = err?.response?.data?.message || err?.message || 'Не удалось обновить лимит';
       // eslint-disable-next-line no-alert
-      alert(messageText);
+      alert(text);
     }
   };
 
   const handleAttachmentSelect = async (event) => {
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
+
+    if (!chatId) {
+      if (event.target) event.target.value = '';
+      return;
+    }
+
     setUploadingAttachments(true);
     try {
-      if (!chatId) return;
       const { attachments } = await attachmentsApi.uploadAttachments(chatId, files);
       setPendingAttachments((prev) => [...prev, ...(attachments || [])]);
     } catch (err) {
-      const messageText = err?.response?.data?.message || err?.message || 'Не удалось загрузить вложения';
+      const text = err?.response?.data?.message || err?.message || 'Не удалось загрузить вложения';
       // eslint-disable-next-line no-alert
-      alert(messageText);
+      alert(text);
     } finally {
       setUploadingAttachments(false);
-      if (event.target) {
-        event.target.value = '';
-      }
+      if (event.target) event.target.value = '';
     }
   };
 
-  const removePendingAttachment = (id) => {
-    setPendingAttachments((prev) => prev.filter((att) => att.id !== id));
+  const removePendingAttachment = (idRaw) => {
+    const id = (idRaw || '').toString();
+    setPendingAttachments((prev) =>
+      prev.filter((att) => (att?.id || att?._id || '').toString() !== id)
+    );
   };
 
   const getAttachmentUrl = (id) => attachmentsApi.getAttachmentUrl(id);
@@ -368,9 +434,7 @@ const mentionableParticipants = useMemo(
   const isImage = (mime) => mime && mime.startsWith('image/');
 
   const getDisplayName = (userId) => {
-    const participant = participants.find(
-      (p) => (p.id || p._id || p).toString() === (userId || '').toString()
-    );
+    const participant = (participants || []).find((p) => getParticipantId(p) === (userId || '').toString());
     return participant?.displayName || participant?.username || userId || 'пользователь';
   };
 
@@ -409,10 +473,11 @@ const mentionableParticipants = useMemo(
     setAuditVisible((prev) => !prev);
   };
 
-  const showInput = !isRemovedFromGroup && !chatBlocked;
+  const showInput = !isRemovedFromGroup && !chatBlocked && !(chatType === 'group' && isMuted && !canManageGroup);
   const typingHintVisible = showInput && typingHint;
 
-  const jumpToMessage = (messageId) => {
+  const jumpToMessage = (messageIdRaw) => {
+    const messageId = (messageIdRaw || '').toString();
     const el = document.getElementById(`msg-${messageId}`);
     if (el && listRef.current) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -431,6 +496,14 @@ const mentionableParticipants = useMemo(
     }
   }, [showInput, onTypingStop, chatId]);
 
+  if (!chatId) {
+    return (
+      <div className="chat-window">
+        <div className="empty-state">Выберите чат</div>
+      </div>
+    );
+  }
+
   return (
     <div className="chat-window">
       <div className="chat-window__header">
@@ -438,6 +511,7 @@ const mentionableParticipants = useMemo(
           <div className="chat-window__title">{headerTitle}</div>
           <div className="chat-window__meta">{headerMeta}</div>
         </div>
+
         <div className="chat-window__actions">
           {(canManageGroup || chatType === 'direct') && (
             <button
@@ -445,7 +519,7 @@ const mentionableParticipants = useMemo(
               className="secondary-btn"
               onClick={() => {
                 if (chatType === 'group') {
-                  onOpenManage(chatId);
+                  onOpenManage && onOpenManage(chatId);
                 } else {
                   setShowManageModal(true);
                 }
@@ -454,9 +528,11 @@ const mentionableParticipants = useMemo(
               Управление
             </button>
           )}
+
           <button type="button" className="secondary-btn" onClick={() => setShowSettings((prev) => !prev)}>
             Настройки
           </button>
+
           {showSettings && (
             <div className="chat-window__settings">
               <label className="field inline">
@@ -467,7 +543,7 @@ const mentionableParticipants = useMemo(
                     if (!chat?.notificationsEnabled) {
                       await ensureNotificationPermission();
                     }
-                    onToggleNotifications(chatId);
+                    onToggleNotifications && onToggleNotifications(chatId);
                   }}
                 />
                 Получать уведомления по этому чату
@@ -476,6 +552,7 @@ const mentionableParticipants = useMemo(
           )}
         </div>
       </div>
+
       <div className="chat-window__search">
         <input
           type="text"
@@ -484,6 +561,7 @@ const mentionableParticipants = useMemo(
           onChange={(e) => setSearchTerm(e.target.value)}
         />
       </div>
+
       {mentionableParticipants.length > 0 && (
         <div className="chat-window__mentions">
           <div className="chat-window__mentions-title">Упоминания</div>
@@ -496,15 +574,19 @@ const mentionableParticipants = useMemo(
               defaultValue=""
             >
               <option value="">@ Упомянуть</option>
-              {mentionableParticipants.map((p) => (
-                <option key={p.id || p._id || p} value={p.id || p._id || p}>
-                  {p.displayName || p.username || 'Участник'}
-                </option>
-              ))}
+              {mentionableParticipants.map((p) => {
+                const pid = getParticipantId(p);
+                return (
+                  <option key={pid} value={pid}>
+                    {p.displayName || p.username || 'Участник'}
+                  </option>
+                );
+              })}
             </select>
+
             <div className="mention-chips">
               {selectedMentions.map((id) => {
-                const p = participants.find((participant) => (participant.id || participant._id || participant).toString() === id);
+                const p = (participants || []).find((participant) => getParticipantId(participant) === id);
                 return (
                   <span key={id} className="mention-chip">
                     @{p?.displayName || p?.username || 'пользователь'}
@@ -518,9 +600,11 @@ const mentionableParticipants = useMemo(
           </div>
         </div>
       )}
+
       {canManageGroup && chatType === 'group' && (
         <div className="chat-window__moderation">
           <div className="chat-window__moderation-title">Модерация</div>
+
           <div className="chat-window__moderation-row">
             <span>Mute:</span>
             <button type="button" className="secondary-btn" onClick={() => handleMutePreset(15)}>
@@ -534,6 +618,7 @@ const mentionableParticipants = useMemo(
             </button>
             {muteUntilText && <span className="muted">до {muteUntilText}</span>}
           </div>
+
           <div className="chat-window__moderation-row">
             <span>Лимит:</span>
             {[1, 2, 5].map((limit) => (
@@ -551,17 +636,19 @@ const mentionableParticipants = useMemo(
             </button>
             {rateLimitPerMinute && <span className="muted">текущий: {rateLimitPerMinute}/мин</span>}
           </div>
+
           <div className="chat-window__moderation-row">
             <button type="button" className="secondary-btn" onClick={toggleAudit}>
               Журнал
             </button>
             {auditLoading && <span className="muted">Загрузка...</span>}
           </div>
+
           {auditVisible && (
             <div className="audit-log">
-              {auditLog.length === 0 && <div className="muted">События отсутствуют</div>}
-              {auditLog.map((event) => (
-                <div key={event.id} className="audit-log__item">
+              {(auditLog || []).length === 0 && <div className="muted">События отсутствуют</div>}
+              {(auditLog || []).map((event) => (
+                <div key={event.id || event._id} className="audit-log__item">
                   <div className="audit-log__message">{formatAuditEvent(event)}</div>
                   <div className="audit-log__meta">{new Date(event.createdAt).toLocaleString()}</div>
                 </div>
@@ -570,6 +657,7 @@ const mentionableParticipants = useMemo(
           )}
         </div>
       )}
+
       {pinnedMessages.length > 0 && (
         <div className="chat-window__pins">
           <div className="chat-window__pins-title">Закрепы</div>
@@ -589,48 +677,53 @@ const mentionableParticipants = useMemo(
           </div>
         </div>
       )}
+
       <div className="chat-window__messages" ref={listRef}>
         {filteredMessages.length === 0 && (
           <p className="empty-state">{searchTerm ? 'Нет совпадений' : 'Нет сообщений. Напишите первым.'}</p>
         )}
+
         {filteredMessages.map((message) => {
-          const messageId = message.id || message._id;
-          const isMine = getSenderId(message)?.toString() === currentUserId?.toString();
+          const messageId = getMessageId(message);
+          const messageIdStr = (messageId?.toString?.() || '').toString();
+
+          const isMine = (getSenderId(message)?.toString?.() || '') === currentId;
           const sender = message.sender || {};
           const authorName = sender.displayName || sender.username || 'Участник';
+
           const metaParts = [];
           const formattedRole = formatRole(sender.role);
           if (formattedRole) metaParts.push(formattedRole);
           if (sender.department) metaParts.push(sender.department);
           const authorMeta = metaParts.join(' · ');
+
           const reactions = message.reactions || [];
           const reactionSummary = reactions.reduce((acc, reaction) => {
-            const list = acc[reaction.emoji] || [];
-            if (reaction.userId) {
-              list.push(reaction.userId);
-            }
-            acc[reaction.emoji] = list;
+            const emoji = reaction?.emoji;
+            if (!emoji) return acc;
+            const uid = (reaction.userId?.toString?.() || reaction.userId || '').toString();
+            const list = acc[emoji] || [];
+            if (uid) list.push(uid);
+            acc[emoji] = list;
             return acc;
           }, {});
-          const isMentioned = (message.mentions || []).some(
-            (id) => id && id.toString() === currentId
-          );
-          const attachments = message.attachments || [];
 
+          const isMentioned = (message.mentions || []).some((id) => (id?.toString?.() || id) === currentId);
+          const attachments = message.attachments || [];
           const isDeletedForAll = !!message.deletedForAll;
+
           const createdAtMs = message.createdAt ? new Date(message.createdAt).getTime() : Date.now();
           const deleteWindowMs = 10 * 60 * 1000;
-          const canDeleteForAll =
-            isMine && !isDeletedForAll && Date.now() - createdAtMs <= deleteWindowMs;
+          const canDeleteForAll = isMine && !isDeletedForAll && Date.now() - createdAtMs <= deleteWindowMs;
 
           return (
-            <div key={messageId || message.id} id={`msg-${messageId}`}>
-              {unreadSeparatorMessageId &&
-                (messageId === unreadSeparatorMessageId || message._id === unreadSeparatorMessageId) && (
-                  <div className="unread-separator">
-                    <span>— Непрочитанные сообщения —</span>
-                  </div>
-                )}
+            <div key={messageIdStr || messageId} id={`msg-${messageIdStr || messageId}`}>
+              {unreadSeparatorMessageId && messageIdStr && messageIdStr === unreadSeparatorMessageId && (
+                <div className="unread-separator">
+                  <span>— Непрочитанные сообщения —</span>
+                </div>
+              )}
+
               <div
                 className={`message-row ${isMine ? 'message-row--mine' : 'message-row--incoming'} ${
                   isMentioned ? 'message-row--mention' : ''
@@ -642,15 +735,15 @@ const mentionableParticipants = useMemo(
                     {authorMeta && <span className="message-author__meta">{authorMeta}</span>}
                     {isMentioned && <span className="mention-badge">Вас упомянули</span>}
                   </div>
+
                   <div className={`message-text ${isDeletedForAll ? 'message-text--deleted' : ''}`}>
-                    {isDeletedForAll
-                      ? 'Сообщение удалено'
-                      : message.text || (attachments.length ? 'Вложение' : '')}
+                    {isDeletedForAll ? 'Сообщение удалено' : message.text || (attachments.length ? 'Вложение' : '')}
                   </div>
+
                   {!isDeletedForAll && attachments.length > 0 && (
                     <div className="message-attachments">
                       {attachments.map((att) => {
-                        const attId = att.id || att._id;
+                        const attId = (att.id || att._id || '').toString();
                         const downloadUrl = getAttachmentUrl(attId);
                         return (
                           <div key={attId} className="attachment-card">
@@ -678,22 +771,24 @@ const mentionableParticipants = useMemo(
                       })}
                     </div>
                   )}
+
                   {canPinMessages && !isDeletedForAll && (
                     <div className="message-actions">
-                      {pinnedSet.has(messageId?.toString()) ? (
-                        <button type="button" className="link-btn" onClick={() => onUnpin(messageId)}>
+                      {pinnedSet.has(messageIdStr) ? (
+                        <button type="button" className="link-btn" onClick={() => onUnpin && onUnpin(messageIdStr)}>
                           Открепить
                         </button>
                       ) : (
-                        <button type="button" className="link-btn" onClick={() => onPin(messageId)}>
+                        <button type="button" className="link-btn" onClick={() => onPin && onPin(messageIdStr)}>
                           Закрепить
                         </button>
                       )}
                     </div>
                   )}
+
                   {!isDeletedForAll && (
                     <div className="message-actions">
-                      <button type="button" className="link-btn" onClick={() => handleDeleteForMe(messageId)}>
+                      <button type="button" className="link-btn" onClick={() => handleDeleteForMe(messageIdStr)}>
                         Удалить у меня
                       </button>
                       {canDeleteForAll && (
@@ -703,29 +798,29 @@ const mentionableParticipants = useMemo(
                       )}
                     </div>
                   )}
+
                   {canReact && (
                     <div className="message-reactions">
                       <div className="message-reactions__selected">
                         {Object.entries(reactionSummary).map(([emoji, users]) => (
                           <button
-                            key={`${messageId}-${emoji}`}
+                            key={`${messageIdStr}-${emoji}`}
                             type="button"
-                            className={`reaction-badge ${
-                              users.includes(currentUserId) ? 'reaction-badge--mine' : ''
-                            }`}
-                            onClick={() => onToggleReaction(messageId, emoji)}
+                            className={`reaction-badge ${users.includes(currentId) ? 'reaction-badge--mine' : ''}`}
+                            onClick={() => onToggleReaction && onToggleReaction(messageIdStr, emoji)}
                           >
                             {emoji} {users.length}
                           </button>
                         ))}
                       </div>
+
                       <div className="message-reactions__picker">
                         {reactionOptions.map((emoji) => (
                           <button
-                            key={`${messageId}-pick-${emoji}`}
+                            key={`${messageIdStr}-pick-${emoji}`}
                             type="button"
                             className="reaction-picker__btn"
-                            onClick={() => onToggleReaction(messageId, emoji)}
+                            onClick={() => onToggleReaction && onToggleReaction(messageIdStr, emoji)}
                           >
                             {emoji}
                           </button>
@@ -734,13 +829,16 @@ const mentionableParticipants = useMemo(
                     </div>
                   )}
                 </div>
+
                 <div className="message-time">{formatMessageDate(message.createdAt)}</div>
               </div>
             </div>
           );
         })}
       </div>
+
       {typingHintVisible && <div className="typing-hint">{typingHint}</div>}
+
       <div className="chat-input-actions">
         <button
           type="button"
@@ -750,6 +848,7 @@ const mentionableParticipants = useMemo(
         >
           📎 Прикрепить
         </button>
+
         <input
           type="file"
           ref={fileInputRef}
@@ -758,49 +857,57 @@ const mentionableParticipants = useMemo(
           onChange={handleAttachmentSelect}
           style={{ display: 'none' }}
         />
+
         {uploadingAttachments && <span className="muted">Загрузка...</span>}
       </div>
+
       {pendingAttachments.length > 0 && (
         <div className="attachments-queue">
-          {pendingAttachments.map((att) => (
-            <div key={att.id} className="attachments-queue__item">
-              <div>
-                <div className="attachments-queue__name">{att.originalName}</div>
-                <div className="attachments-queue__size muted">{formatSize(att.size)}</div>
+          {pendingAttachments.map((att) => {
+            const attId = (att?.id || att?._id || '').toString();
+            return (
+              <div key={attId} className="attachments-queue__item">
+                <div>
+                  <div className="attachments-queue__name">{att.originalName}</div>
+                  <div className="attachments-queue__size muted">{formatSize(att.size)}</div>
+                </div>
+                <button type="button" className="link-btn" onClick={() => removePendingAttachment(attId)}>
+                  Убрать
+                </button>
               </div>
-              <button type="button" className="link-btn" onClick={() => removePendingAttachment(att.id)}>
-                Убрать
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
+
       <div className="chat-input-bar">
         {bottomNotice ? (
           <div className="chat-input-banner">{bottomNotice}</div>
         ) : (
-          <VkStyleInput
-            value={messageText}
-            onChange={handleInputChange}
-            onSend={handleSend}
-            disabled={!socketConnected}
-          />
+          <VkStyleInput value={messageText} onChange={handleInputChange} onSend={handleSend} disabled={!socketConnected} />
         )}
       </div>
+
       {showManageModal && chatType === 'direct' && (
-        <div className="modal-backdrop" onClick={() => setShowManageModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="modal-backdrop"
+          onClick={() => setShowManageModal(false)}
+          role="presentation"
+        >
+          <div className="modal" onClick={(e) => e.stopPropagation()} role="presentation">
             <div className="modal__header">
               <h3>Управление чатом</h3>
               <button type="button" className="secondary-btn" onClick={() => setShowManageModal(false)}>
                 Закрыть
               </button>
             </div>
+
             <p className="muted">
               {isBlockedByMe
                 ? 'Вы заблокировали этого пользователя. Чтобы снова начать переписку, разблокируйте его.'
                 : 'Вы можете заблокировать этого пользователя. В этом случае оба участника не смогут отправлять сообщения в этом чате.'}
             </p>
+
             <div className="btn-row">
               {isBlockedByMe ? (
                 <button
@@ -835,7 +942,8 @@ const mentionableParticipants = useMemo(
 
 ChatWindow.propTypes = {
   chat: PropTypes.shape({
-    id: PropTypes.string.isRequired,
+    id: PropTypes.string,
+    _id: PropTypes.string,
     otherUser: PropTypes.object,
     isOnline: PropTypes.bool,
     notificationsEnabled: PropTypes.bool,
@@ -850,13 +958,13 @@ ChatWindow.propTypes = {
     blocks: PropTypes.array,
     muteUntil: PropTypes.oneOfType([PropTypes.string, PropTypes.instanceOf(Date)]),
     rateLimitPerMinute: PropTypes.number,
-  }).isRequired,
+  }),
   messages: PropTypes.arrayOf(
     PropTypes.shape({
       id: PropTypes.string,
       _id: PropTypes.string,
-      chatId: PropTypes.string.isRequired,
-      senderId: PropTypes.string.isRequired,
+      chatId: PropTypes.string,
+      senderId: PropTypes.string,
       sender: PropTypes.object,
       text: PropTypes.string,
       createdAt: PropTypes.string,
@@ -864,6 +972,7 @@ ChatWindow.propTypes = {
       deletedForAll: PropTypes.bool,
       deletedAt: PropTypes.string,
       deletedBy: PropTypes.string,
+      reactions: PropTypes.array,
       attachments: PropTypes.arrayOf(
         PropTypes.shape({
           id: PropTypes.string,
@@ -874,7 +983,7 @@ ChatWindow.propTypes = {
         })
       ),
     })
-  ).isRequired,
+  ),
   lastReadAt: PropTypes.oneOfType([PropTypes.string, PropTypes.instanceOf(Date)]),
   currentUserId: PropTypes.string.isRequired,
   typingUsers: PropTypes.arrayOf(PropTypes.string),
@@ -896,6 +1005,7 @@ ChatWindow.propTypes = {
   auditLog: PropTypes.arrayOf(
     PropTypes.shape({
       id: PropTypes.string,
+      _id: PropTypes.string,
       actorId: PropTypes.string,
       type: PropTypes.string,
       meta: PropTypes.object,
@@ -906,6 +1016,8 @@ ChatWindow.propTypes = {
 };
 
 ChatWindow.defaultProps = {
+  chat: null,
+  messages: [],
   typingUsers: [],
   onToggleNotifications: () => {},
   onOpenManage: () => {},
