@@ -79,6 +79,15 @@ const chatSchema = new mongoose.Schema(
       sender: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
       createdAt: { type: Date, default: null },
     },
+    pinnedMessageIds: {
+      type: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'Message',
+        },
+      ],
+      default: [],
+    },
     updatedAt: {
       type: Date,
       default: Date.now,

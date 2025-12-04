@@ -41,6 +41,14 @@ const userSchema = new mongoose.Schema(
       default: null,
       trim: true,
     },
+    dndEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    dndUntil: {
+      type: Date,
+      default: null,
+    },
     createdAt: {
       type: Date,
       default: Date.now,

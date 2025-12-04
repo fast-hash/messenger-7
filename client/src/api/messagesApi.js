@@ -11,3 +11,8 @@ export const sendMessage = async (payload) => {
   const { data } = await httpClient.post('/api/messages', payload);
   return data;
 };
+
+export const toggleReaction = async (messageId, emoji) => {
+  const { data } = await httpClient.post(`/api/messages/${messageId}/reactions`, { emoji });
+  return data;
+};

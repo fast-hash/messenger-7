@@ -19,6 +19,10 @@ const ChatWindow = ({
   socketConnected,
   onBlock,
   onUnblock,
+  pinnedMessageIds,
+  onPin,
+  onUnpin,
+  onToggleReaction,
 }) => {
   const listRef = useRef(null);
   const typingTimer = useRef(null);
@@ -28,6 +32,7 @@ const ChatWindow = ({
   const [showManageModal, setShowManageModal] = useState(false);
   const [separatorCleared, setSeparatorCleared] = useState(false);
   const [messageText, setMessageText] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     setShowSettings(false);
@@ -35,6 +40,7 @@ const ChatWindow = ({
     setShowManageModal(false);
     setSeparatorCleared(false);
     setMessageText('');
+    setSearchTerm('');
     if (typingTimer.current) {
       clearTimeout(typingTimer.current);
     }
@@ -89,6 +95,12 @@ const ChatWindow = ({
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
   }, [messages]);
+
+  const filteredMessages = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    if (!query) return messages;
+    return messages.filter((message) => (message.text || '').toLowerCase().includes(query));
+  }, [messages, searchTerm]);
 
   const participantIds = useMemo(
     () => (chat.participants || []).map((p) => (p.id || p._id || p).toString()),
@@ -171,6 +183,22 @@ const ChatWindow = ({
     return '';
   }, [chatBlocked, isBlockedByMe, isBlockedMe, isRemovedFromGroup]);
 
+  const pinnedSet = useMemo(() => new Set(pinnedMessageIds || []), [pinnedMessageIds]);
+  const pinnedMessages = useMemo(
+    () =>
+      (pinnedMessageIds || []).map((id) => {
+        const found = messages.find((message) => (message.id || message._id || '').toString() === id);
+        return { id, message: found };
+      }),
+    [messages, pinnedMessageIds]
+  );
+
+  const canPinMessages =
+    chat.type === 'direct' || chat.createdBy === currentUserId || (chat.admins || []).includes(currentUserId);
+  const canReact = !isRemovedFromGroup && !chatBlocked;
+
+  const reactionOptions = ['👍', '❤️', '😂', '😮', '😢', '🎉', '🙏', '👏', '🔥', '✅'];
+
   const handleInputChange = (value) => {
     setMessageText(value);
     const hasText = value.trim().length > 0;
@@ -217,6 +245,13 @@ const ChatWindow = ({
 
   const showInput = !isRemovedFromGroup && !chatBlocked;
   const typingHintVisible = showInput && typingHint;
+
+  const jumpToMessage = (messageId) => {
+    const el = document.getElementById(`msg-${messageId}`);
+    if (el && listRef.current) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
 
   useEffect(() => {
     if (!showInput && typingActive.current) {
@@ -273,9 +308,31 @@ const ChatWindow = ({
           )}
         </div>
       </div>
+      <div className="chat-window__search">
+        <input
+          type="text"
+          placeholder="Поиск по сообщениям"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+        />
+      </div>
+      {pinnedMessages.length > 0 && (
+        <div className="chat-window__pins">
+          <div className="chat-window__pins-title">Закрепы</div>
+          <div className="chat-window__pins-list">
+            {pinnedMessages.map(({ id, message }) => (
+              <button key={id} type="button" className="secondary-btn" onClick={() => jumpToMessage(id)}>
+                {message ? message.text : 'Сообщение'}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="chat-window__messages" ref={listRef}>
-        {messages.length === 0 && <p className="empty-state">Нет сообщений. Напишите первым.</p>}
-        {messages.map((message) => {
+        {filteredMessages.length === 0 && (
+          <p className="empty-state">{searchTerm ? 'Нет совпадений' : 'Нет сообщений. Напишите первым.'}</p>
+        )}
+        {filteredMessages.map((message) => {
           const messageId = message.id || message._id;
           const isMine = getSenderId(message)?.toString() === currentUserId?.toString();
           const sender = message.sender || {};
@@ -285,9 +342,18 @@ const ChatWindow = ({
           if (formattedRole) metaParts.push(formattedRole);
           if (sender.department) metaParts.push(sender.department);
           const authorMeta = metaParts.join(' · ');
+          const reactions = message.reactions || [];
+          const reactionSummary = reactions.reduce((acc, reaction) => {
+            const list = acc[reaction.emoji] || [];
+            if (reaction.userId) {
+              list.push(reaction.userId);
+            }
+            acc[reaction.emoji] = list;
+            return acc;
+          }, {});
 
           return (
-            <div key={messageId || message.id}>
+            <div key={messageId || message.id} id={`msg-${messageId}`}>
               {unreadSeparatorMessageId &&
                 (messageId === unreadSeparatorMessageId || message._id === unreadSeparatorMessageId) && (
                   <div className="unread-separator">
@@ -301,6 +367,49 @@ const ChatWindow = ({
                     {authorMeta && <span className="message-author__meta">{authorMeta}</span>}
                   </div>
                   <div className="message-text">{message.text}</div>
+                  {canPinMessages && (
+                    <div className="message-actions">
+                      {pinnedSet.has(messageId?.toString()) ? (
+                        <button type="button" className="link-btn" onClick={() => onUnpin(messageId)}>
+                          Открепить
+                        </button>
+                      ) : (
+                        <button type="button" className="link-btn" onClick={() => onPin(messageId)}>
+                          Закрепить
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {canReact && (
+                    <div className="message-reactions">
+                      <div className="message-reactions__selected">
+                        {Object.entries(reactionSummary).map(([emoji, users]) => (
+                          <button
+                            key={`${messageId}-${emoji}`}
+                            type="button"
+                            className={`reaction-badge ${
+                              users.includes(currentUserId) ? 'reaction-badge--mine' : ''
+                            }`}
+                            onClick={() => onToggleReaction(messageId, emoji)}
+                          >
+                            {emoji} {users.length}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="message-reactions__picker">
+                        {reactionOptions.map((emoji) => (
+                          <button
+                            key={`${messageId}-pick-${emoji}`}
+                            type="button"
+                            className="reaction-picker__btn"
+                            onClick={() => onToggleReaction(messageId, emoji)}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="message-time">{formatMessageDate(message.createdAt)}</div>
               </div>
@@ -405,6 +514,10 @@ ChatWindow.propTypes = {
   socketConnected: PropTypes.bool,
   onBlock: PropTypes.func,
   onUnblock: PropTypes.func,
+  pinnedMessageIds: PropTypes.arrayOf(PropTypes.string),
+  onPin: PropTypes.func,
+  onUnpin: PropTypes.func,
+  onToggleReaction: PropTypes.func,
 };
 
 ChatWindow.defaultProps = {
@@ -418,6 +531,10 @@ ChatWindow.defaultProps = {
   lastReadAt: null,
   onBlock: () => {},
   onUnblock: () => {},
+  pinnedMessageIds: [],
+  onPin: () => {},
+  onUnpin: () => {},
+  onToggleReaction: () => {},
 };
 
 export default ChatWindow;

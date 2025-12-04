@@ -18,6 +18,8 @@ const authMiddleware = (req, res, next) => {
       role: payload.role,
       department: payload.department,
       jobTitle: payload.jobTitle,
+      dndEnabled: payload.dndEnabled || false,
+      dndUntil: payload.dndUntil || null,
     };
 
     return next();
