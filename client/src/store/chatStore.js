@@ -264,11 +264,11 @@ export const useChatStore = create((set, get) => ({
     get().setMessageDeleted(chatId, result);
     return result;
   },
-  async sendMessage(chatId, text, mentions = []) {
+  async sendMessage(chatId, text, mentions = [], attachments = []) {
     const socket = get().socket;
     if (socket) {
       await new Promise((resolve, reject) => {
-        socket.emit('message:send', { chatId, text, mentions }, (response) => {
+        socket.emit('message:send', { chatId, text, mentions, attachments }, (response) => {
           if (!response || response.ok) {
             resolve();
           } else {
@@ -280,7 +280,7 @@ export const useChatStore = create((set, get) => ({
       });
       return;
     }
-    const { message } = await messagesApi.sendMessage({ chatId, text, mentions });
+    const { message } = await messagesApi.sendMessage({ chatId, text, mentions, attachments });
     get().addMessage(chatId, message);
     get().updateChatLastMessage(chatId, message);
   },
@@ -310,7 +310,7 @@ export const useChatStore = create((set, get) => ({
         return {
           ...chat,
           lastMessage: {
-            text: message.text,
+            text: message.text || (message.attachments?.length ? 'Вложение' : message.text),
             senderId: message.senderId,
             createdAt: message.createdAt,
           },
@@ -440,6 +440,7 @@ export const useChatStore = create((set, get) => ({
         deletedAt: deletedAt || updated[idx].deletedAt || null,
         deletedBy: deletedBy || updated[idx].deletedBy || null,
         text: null,
+        attachments: [],
       };
 
       return { messages: { ...state.messages, [chatId]: updated } };

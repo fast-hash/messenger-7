@@ -349,7 +349,7 @@ const ChatsPage = () => {
             typingUsers={typingUsers}
             onToggleNotifications={toggleNotifications}
             onOpenManage={openManageModal}
-            onSend={(text, mentions) => sendMessage(selectedChatId, text, mentions)}
+            onSend={(text, mentions, attachments) => sendMessage(selectedChatId, text, mentions, attachments)}
             onTypingStart={(chatId) => socket?.emit('typing:start', { chatId })}
             onTypingStop={(chatId) => socket?.emit('typing:stop', { chatId })}
             socketConnected={!!socket}

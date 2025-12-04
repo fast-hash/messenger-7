@@ -122,7 +122,7 @@ const setupSockets = (httpServer) => {
       }
     });
 
-    socket.on('message:send', async ({ chatId, text, mentions }, callback) => {
+    socket.on('message:send', async ({ chatId, text, mentions, attachments }, callback) => {
       try {
         const message = await messageService.sendMessage({
           chatId,
@@ -130,6 +130,7 @@ const setupSockets = (httpServer) => {
           senderRole: socket.user.role,
           text,
           mentions,
+          attachments,
         });
 
         io.to(`chat:${chatId}`).emit('message:new', { message });

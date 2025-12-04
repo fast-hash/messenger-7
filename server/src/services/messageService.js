@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Chat = require('../models/Chat');
 const Message = require('../models/Message');
+const Attachment = require('../models/Attachment');
 const cryptoService = require('./crypto/cryptoService');
 const auditService = require('./auditService');
 
@@ -39,6 +40,17 @@ const toMessageDto = (messageDoc, text) => {
     : { id: sender.toString() };
 
   const deletedById = messageDoc.deletedBy ? messageDoc.deletedBy.toString() : null;
+  const attachmentsList = Array.isArray(messageDoc.attachments) ? messageDoc.attachments : [];
+  const attachmentsDto = messageDoc.deletedForAll
+    ? []
+    : attachmentsList.map((attachment) => ({
+        id: attachment._id ? attachment._id.toString() : attachment.toString(),
+        originalName: attachment.originalName,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+        status: attachment.status,
+      }));
+
   return {
     id: messageDoc._id.toString(),
     chatId: messageDoc.chat.toString(),
@@ -54,22 +66,24 @@ const toMessageDto = (messageDoc, text) => {
     deletedForAll: !!messageDoc.deletedForAll,
     deletedAt: messageDoc.deletedAt,
     deletedBy: deletedById,
+    attachments: attachmentsDto,
   };
 };
 
-const sendMessage = async ({ chatId, senderId, senderRole, text, mentions = [] }) => {
-  if (!chatId || !senderId || typeof text !== 'string') {
-    const error = new Error('chatId, senderId, and text are required');
+const sendMessage = async ({ chatId, senderId, senderRole, text, mentions = [], attachments = [] }) => {
+  const hasText = typeof text === 'string' && text.trim().length > 0;
+  const attachmentIds = Array.isArray(attachments)
+    ? attachments.filter((id) => id && mongoose.Types.ObjectId.isValid(id)).map((id) => id.toString())
+    : [];
+  const uniqueAttachmentIds = [...new Set(attachmentIds)];
+
+  if (!chatId || !senderId || (!hasText && uniqueAttachmentIds.length === 0)) {
+    const error = new Error('chatId, senderId, and content are required');
     error.status = 400;
     throw error;
   }
 
-  const trimmed = text.trim();
-  if (!trimmed) {
-    const error = new Error('Message text cannot be empty');
-    error.status = 400;
-    throw error;
-  }
+  const trimmed = hasText ? text.trim() : '';
 
   const chat = await Chat.findById(chatId);
   if (!chat) {
@@ -148,6 +162,22 @@ const sendMessage = async ({ chatId, senderId, senderRole, text, mentions = [] }
     senderId,
   });
 
+  if (uniqueAttachmentIds.length) {
+    const docs = await Attachment.find({ _id: { $in: uniqueAttachmentIds } });
+    const invalid = docs.filter(
+      (doc) =>
+        doc.chatId.toString() !== chatId.toString() ||
+        doc.uploaderId.toString() !== senderId.toString() ||
+        doc.status !== 'uploaded'
+    );
+
+    if (invalid.length || docs.length !== uniqueAttachmentIds.length) {
+      const error = new Error('Некоторые вложения недоступны для отправки');
+      error.status = 400;
+      throw error;
+    }
+  }
+
   const message = await Message.create({
     chat: chatId,
     sender: senderId,
@@ -155,13 +185,16 @@ const sendMessage = async ({ chatId, senderId, senderRole, text, mentions = [] }
     ciphertext,
     encryption,
     mentions: filteredMentions,
+    attachments: uniqueAttachmentIds,
   });
 
   await message.populate('sender');
 
+  const lastMessageText = trimmed || (uniqueAttachmentIds.length ? 'Вложение' : '');
+
   await Chat.findByIdAndUpdate(chatId, {
     lastMessage: {
-      text: plaintext,
+      text: lastMessageText,
       sender: senderId,
       createdAt: message.createdAt,
     },
@@ -182,9 +215,17 @@ const sendMessage = async ({ chatId, senderId, senderRole, text, mentions = [] }
     );
   }
 
-  const safeText = await cryptoService.decrypt(message, { viewerId: senderId });
+  if (uniqueAttachmentIds.length) {
+    await Attachment.updateMany(
+      { _id: { $in: uniqueAttachmentIds } },
+      { $set: { status: 'linked', messageId: message._id, expiresAt: null } }
+    );
+  }
 
-  return toMessageDto(message, safeText);
+  const populatedMessage = await Message.findById(message._id).populate('sender').populate('attachments');
+  const safeText = await cryptoService.decrypt(populatedMessage, { viewerId: senderId });
+
+  return toMessageDto(populatedMessage, safeText);
 };
 
 const getMessagesForChat = async ({ chatId, viewerId }) => {
@@ -206,7 +247,8 @@ const getMessagesForChat = async ({ chatId, viewerId }) => {
   const viewerObjectId = new mongoose.Types.ObjectId(viewerId);
   const messages = await Message.find({ chat: chatId, deletedFor: { $ne: viewerObjectId } })
     .sort({ createdAt: 1 })
-    .populate('sender');
+    .populate('sender')
+    .populate('attachments');
 
   const results = [];
   for (const message of messages) {

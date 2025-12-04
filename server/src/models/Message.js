@@ -24,6 +24,13 @@ const messageSchema = new mongoose.Schema(
       type: Object,
       default: null,
     },
+    attachments: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Attachment',
+        default: [],
+      },
+    ],
     deletedFor: [
       {
         type: mongoose.Schema.Types.ObjectId,
