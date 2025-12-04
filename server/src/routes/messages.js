@@ -159,4 +159,55 @@ router.post(
   })
 );
 
+router.post(
+  '/:messageId/reactions',
+  asyncHandler(async (req, res) => {
+    const { emoji } = req.body || {};
+    const result = await messageService.toggleReaction({
+      messageId: req.params.messageId,
+      userId: req.user.id,
+      emoji,
+    });
+
+    const io = getIo();
+    if (io) {
+      io.to(`chat:${result.chatId}`).emit('message:reactionsUpdated', {
+        chatId: result.chatId,
+        messageId: result.messageId,
+        reactions: result.reactions,
+      });
+    }
+
+    res.json({ reactions: result.reactions });
+  })
+);
+
+router.post(
+  '/:messageId/delete-for-me',
+  asyncHandler(async (req, res) => {
+    await messageService.deleteForMe({
+      messageId: req.params.messageId,
+      userId: req.user.id,
+    });
+    res.json({ ok: true });
+  })
+);
+
+router.post(
+  '/:messageId/delete-for-all',
+  asyncHandler(async (req, res) => {
+    const result = await messageService.deleteForAll({
+      messageId: req.params.messageId,
+      userId: req.user.id,
+    });
+
+    const io = getIo();
+    if (io) {
+      io.to(`chat:${result.chatId}`).emit('message:deleted', result);
+    }
+
+    res.json(result);
+  })
+);
+
 module.exports = router;
