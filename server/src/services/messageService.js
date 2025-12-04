@@ -1,6 +1,8 @@
+const mongoose = require('mongoose');
 const Chat = require('../models/Chat');
 const Message = require('../models/Message');
 const cryptoService = require('./crypto/cryptoService');
+const auditService = require('./auditService');
 
 const ensureParticipant = (chatDoc, userId, { allowRemoved = false } = {}) => {
   const participantIds = (chatDoc.participants || []).map((id) => id.toString());
@@ -36,21 +38,26 @@ const toMessageDto = (messageDoc, text) => {
       }
     : { id: sender.toString() };
 
+  const deletedById = messageDoc.deletedBy ? messageDoc.deletedBy.toString() : null;
   return {
     id: messageDoc._id.toString(),
     chatId: messageDoc.chat.toString(),
     senderId: messageDoc.sender.toString(),
     sender: senderDto,
-    text,
+    text: messageDoc.deletedForAll ? null : text,
     reactions: (messageDoc.reactions || []).map((reaction) => ({
       emoji: reaction.emoji,
       userId: reaction.userId ? reaction.userId.toString() : null,
     })),
     createdAt: messageDoc.createdAt,
+    mentions: (messageDoc.mentions || []).map((id) => id.toString()),
+    deletedForAll: !!messageDoc.deletedForAll,
+    deletedAt: messageDoc.deletedAt,
+    deletedBy: deletedById,
   };
 };
 
-const sendMessage = async ({ chatId, senderId, text }) => {
+const sendMessage = async ({ chatId, senderId, senderRole, text, mentions = [] }) => {
   if (!chatId || !senderId || typeof text !== 'string') {
     const error = new Error('chatId, senderId, and text are required');
     error.status = 400;
@@ -98,6 +105,44 @@ const sendMessage = async ({ chatId, senderId, text }) => {
 
   ensureParticipant(chat, senderId);
 
+  const isChatAdmin =
+    (chat.admins || []).some((id) => id.toString() === senderId.toString()) ||
+    (chat.createdBy && chat.createdBy.toString() === senderId.toString());
+  const isGlobalAdmin = senderRole === 'admin';
+
+  const now = new Date();
+  if (chat.muteUntil && new Date(chat.muteUntil).getTime() > now.getTime() && !isChatAdmin && !isGlobalAdmin) {
+    const error = new Error(`Чат на паузе до ${new Date(chat.muteUntil).toISOString()}`);
+    error.status = 403;
+    throw error;
+  }
+
+  if (chat.rateLimitPerMinute && !isChatAdmin && !isGlobalAdmin) {
+    const since = new Date(now.getTime() - 60 * 1000);
+    const recentCount = await Message.countDocuments({
+      chat: chatId,
+      sender: senderId,
+      createdAt: { $gt: since },
+    });
+
+    if (recentCount >= chat.rateLimitPerMinute) {
+      const error = new Error('Превышен лимит сообщений в этом чате');
+      error.status = 429;
+      throw error;
+    }
+  }
+
+  const uniqueMentions = Array.from(
+    new Set(
+      (Array.isArray(mentions) ? mentions : [])
+        .filter((id) => id && mongoose.Types.ObjectId.isValid(id))
+        .map((id) => id.toString())
+    )
+  );
+
+  const participantIds = (chat.participants || []).map((id) => id.toString());
+  const filteredMentions = uniqueMentions.filter((id) => participantIds.includes(id));
+
   const { ciphertext, plaintext, encryption } = await cryptoService.encrypt(trimmed, {
     chatId,
     senderId,
@@ -109,6 +154,7 @@ const sendMessage = async ({ chatId, senderId, text }) => {
     plaintext,
     ciphertext,
     encryption,
+    mentions: filteredMentions,
   });
 
   await message.populate('sender');
@@ -157,13 +203,19 @@ const getMessagesForChat = async ({ chatId, viewerId }) => {
 
   ensureParticipant(chat, viewerId, { allowRemoved: true });
 
-  const messages = await Message.find({ chat: chatId })
+  const viewerObjectId = new mongoose.Types.ObjectId(viewerId);
+  const messages = await Message.find({ chat: chatId, deletedFor: { $ne: viewerObjectId } })
     .sort({ createdAt: 1 })
     .populate('sender');
 
   const results = [];
   for (const message of messages) {
     // eslint-disable-next-line no-await-in-loop
+    if (message.deletedForAll) {
+      results.push(toMessageDto(message, null));
+      continue;
+    }
+
     const safeText = await cryptoService.decrypt(message, { viewerId });
     results.push(toMessageDto(message, safeText));
   }
@@ -224,8 +276,104 @@ const toggleReaction = async ({ messageId, userId, emoji }) => {
   return { chatId: chat._id.toString(), messageId: message._id.toString(), reactions };
 };
 
+const deleteForMe = async ({ messageId, userId }) => {
+  if (!messageId || !userId) {
+    const error = new Error('messageId and userId are required');
+    error.status = 400;
+    throw error;
+  }
+
+  const message = await Message.findById(messageId);
+  if (!message) {
+    const error = new Error('Message not found');
+    error.status = 404;
+    throw error;
+  }
+
+  const chat = await Chat.findById(message.chat);
+  if (!chat) {
+    const error = new Error('Chat not found');
+    error.status = 404;
+    throw error;
+  }
+
+  ensureParticipant(chat, userId, { allowRemoved: true });
+
+  const alreadyDeleted = (message.deletedFor || []).some(
+    (id) => id && id.toString() === userId.toString()
+  );
+
+  if (!alreadyDeleted) {
+    message.deletedFor.push(userId);
+    await message.save();
+  }
+
+  return { ok: true };
+};
+
+const deleteForAll = async ({ messageId, userId }) => {
+  if (!messageId || !userId) {
+    const error = new Error('messageId and userId are required');
+    error.status = 400;
+    throw error;
+  }
+
+  const message = await Message.findById(messageId);
+  if (!message) {
+    const error = new Error('Message not found');
+    error.status = 404;
+    throw error;
+  }
+
+  const chat = await Chat.findById(message.chat);
+  if (!chat) {
+    const error = new Error('Chat not found');
+    error.status = 404;
+    throw error;
+  }
+
+  ensureParticipant(chat, userId, { allowRemoved: true });
+
+  if (message.sender.toString() !== userId.toString()) {
+    const error = new Error('Удаление для всех доступно только автору сообщения');
+    error.status = 403;
+    throw error;
+  }
+
+  const tenMinutes = 10 * 60 * 1000;
+  if (Date.now() - new Date(message.createdAt).getTime() > tenMinutes) {
+    const error = new Error('Окно удаления истекло (10 минут)');
+    error.status = 409;
+    throw error;
+  }
+
+  message.deletedForAll = true;
+  message.deletedAt = new Date();
+  message.deletedBy = userId;
+  await message.save();
+
+  if (chat.type === 'group') {
+    await auditService.logEvent({
+      chatId: message.chat,
+      actorId: userId,
+      type: 'MESSAGE_DELETED_FOR_ALL',
+      meta: { messageId: message._id.toString() },
+    });
+  }
+
+  return {
+    messageId: message._id.toString(),
+    chatId: message.chat.toString(),
+    deletedForAll: true,
+    deletedAt: message.deletedAt,
+    deletedBy: userId.toString(),
+  };
+};
+
 module.exports = {
   sendMessage,
   getMessagesForChat,
   toggleReaction,
+  deleteForMe,
+  deleteForAll,
 };

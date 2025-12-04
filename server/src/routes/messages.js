@@ -23,11 +23,13 @@ router.get(
 router.post(
   '/',
   asyncHandler(async (req, res) => {
-    const { chatId, text } = req.body || {};
+    const { chatId, text, mentions } = req.body || {};
     const message = await messageService.sendMessage({
       chatId,
       senderId: req.user.id,
+      senderRole: req.user.role,
       text,
+      mentions,
     });
     res.status(201).json({ message });
   })
@@ -53,6 +55,34 @@ router.post(
     }
 
     res.json({ reactions: result.reactions });
+  })
+);
+
+router.post(
+  '/:messageId/delete-for-me',
+  asyncHandler(async (req, res) => {
+    await messageService.deleteForMe({
+      messageId: req.params.messageId,
+      userId: req.user.id,
+    });
+    res.json({ ok: true });
+  })
+);
+
+router.post(
+  '/:messageId/delete-for-all',
+  asyncHandler(async (req, res) => {
+    const result = await messageService.deleteForAll({
+      messageId: req.params.messageId,
+      userId: req.user.id,
+    });
+
+    const io = getIo();
+    if (io) {
+      io.to(`chat:${result.chatId}`).emit('message:deleted', result);
+    }
+
+    res.json(result);
   })
 );
 

@@ -16,3 +16,13 @@ export const toggleReaction = async (messageId, emoji) => {
   const { data } = await httpClient.post(`/api/messages/${messageId}/reactions`, { emoji });
   return data;
 };
+
+export const deleteForMe = async (messageId) => {
+  const { data } = await httpClient.post(`/api/messages/${messageId}/delete-for-me`);
+  return data;
+};
+
+export const deleteForAll = async (messageId) => {
+  const { data } = await httpClient.post(`/api/messages/${messageId}/delete-for-all`);
+  return data;
+};
